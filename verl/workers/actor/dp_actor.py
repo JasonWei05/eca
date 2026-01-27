@@ -19,6 +19,7 @@ Single Process Actor
 
 import logging
 import os
+from contextlib import nullcontext
 
 import torch
 from torch import nn
@@ -39,6 +40,7 @@ from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import gather_outputs_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.actor import BasePPOActor
 from verl.workers.config import ActorConfig
+from verl.utils.vn_entropy import VNEntropyCalculator
 
 __all__ = ["DataParallelPPOActor"]
 
@@ -97,6 +99,10 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             self.scaler = None
 
+        self.vn_entropy_calculator = None
+        self.vn_entropy_pca_dim = None
+        self.vn_entropy_use_pca = True
+
         # Sum of squared probabilities computation (for optimal_token_baseline)
         # Only initialize if calculate_sum_pi_squared config is enabled
         if self.config.get("calculate_sum_pi_squared", False):
@@ -111,7 +117,11 @@ class DataParallelPPOActor(BasePPOActor):
             )
 
     def _forward_micro_batch(
-        self, micro_batch: dict[str, torch.Tensor], temperature: float, calculate_entropy: bool = False
+        self,
+        micro_batch: dict[str, torch.Tensor],
+        temperature: float,
+        calculate_entropy: bool = False,
+        return_logits: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Returns:
@@ -121,6 +131,8 @@ class DataParallelPPOActor(BasePPOActor):
                     entropys: (bs, response_len)
                 if calculate_sum_pi_squared is False:
                     sum_pi_squared: (bs, response_len)
+                if return_logits is True:
+                    logits: (bs, response_len, vocab_size)
         """
         calculate_sum_pi_squared = self.config.get("calculate_sum_pi_squared", False)
         sum_pi_squared_checkpointing = self.config.get("sum_pi_squared_checkpointing", False)
@@ -307,11 +319,17 @@ class DataParallelPPOActor(BasePPOActor):
                         sum_pi_squared_rmpad = gather_outputs_and_unpad(
                             sum_pi_squared_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
                         )
+                    if return_logits and not self.use_fused_kernels:
+                        logits_rmpad = gather_outputs_and_unpad(
+                            logits_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                        )
 
                 if is_mask_all_zero:
                     log_probs = log_probs[:0]
                     if calculate_entropy:
                         entropy_rmpad = entropy_rmpad[:0]
+                    if return_logits and not self.use_fused_kernels:
+                        logits_rmpad = logits_rmpad[:0]
 
                 # pad back to (bsz, seqlen)
                 if calculate_entropy:
@@ -328,6 +346,14 @@ class DataParallelPPOActor(BasePPOActor):
                         batch=batch_size,
                         seqlen=seqlen,
                     )
+                if return_logits and not self.use_fused_kernels:
+                    full_logits = pad_input(
+                        hidden_states=logits_rmpad,
+                        indices=indices,
+                        batch=batch_size,
+                        seqlen=seqlen,
+                    )
+
                 full_log_probs = pad_input(
                     hidden_states=log_probs.unsqueeze(-1),
                     indices=indices,
@@ -341,6 +367,9 @@ class DataParallelPPOActor(BasePPOActor):
                 if calculate_sum_pi_squared:
                     # (bsz, response_length)
                     sum_pi_squared = full_sum_pi_squared.squeeze(-1)[:, -response_length - 1 : -1]
+                if return_logits and not self.use_fused_kernels:
+                    logits = full_logits[:, -response_length - 1 : -1, :]  # (bsz, response_length, vocab_size)
+                
                 log_probs = full_log_probs.squeeze(-1)[:, -response_length - 1 : -1]  # (bsz, response_length)
 
             else:  # not using rmpad and no ulysses sp
@@ -386,6 +415,8 @@ class DataParallelPPOActor(BasePPOActor):
                 outputs["entropys"] = entropy
             if calculate_sum_pi_squared:
                 outputs["sum_pi_squared"] = sum_pi_squared
+            if return_logits and not self.use_fused_kernels:
+                outputs["logits"] = logits
             return outputs
 
     def _optimizer_step(self):
@@ -413,6 +444,98 @@ class DataParallelPPOActor(BasePPOActor):
             else:
                 self.actor_optimizer.step()
         return grad_norm
+
+    def _get_embedding_matrix(self) -> torch.Tensor:
+        model = self.actor_module
+        param_ctx = nullcontext()
+        if isinstance(model, FSDP):
+            param_ctx = FSDP.summon_full_params(model, writeback=False, recurse=False)
+
+        with param_ctx:
+            base_model = getattr(model, "_fsdp_wrapped_module", model)
+            if hasattr(base_model, "module"):
+                base_model = base_model.module
+            if hasattr(base_model, "get_input_embeddings"):
+                embeddings = base_model.get_input_embeddings()
+            elif hasattr(base_model, "model") and hasattr(base_model.model, "embed_tokens"):
+                embeddings = base_model.model.embed_tokens
+            elif hasattr(base_model, "transformer") and hasattr(base_model.transformer, "wte"):
+                embeddings = base_model.transformer.wte
+            else:
+                raise ValueError("Unsupported model for embedding extraction.")
+
+            weight = embeddings.weight
+            if hasattr(weight, "full_tensor"):
+                weight = weight.full_tensor()
+            return weight.detach()
+
+    def update_vn_entropy_pca(self, pca_dim: int = 512, use_pca: bool = True):
+        embedding_matrix = self._get_embedding_matrix()
+        self.vn_entropy_pca_dim = pca_dim
+        self.vn_entropy_use_pca = use_pca
+        if self.vn_entropy_calculator is None:
+            self.vn_entropy_calculator = VNEntropyCalculator(
+                embedding_matrix=embedding_matrix,
+                pca_dim=pca_dim,
+                use_pca=use_pca,
+            )
+        else:
+            self.vn_entropy_calculator.pca_dim = pca_dim
+            self.vn_entropy_calculator.use_pca = use_pca
+            self.vn_entropy_calculator.update_pca(embedding_matrix)
+
+    def compute_vn_entropy(self, data: DataProto, top_p: float) -> torch.Tensor:
+        if self.vn_entropy_calculator is None:
+            pca_dim = self.vn_entropy_pca_dim or 256
+            self.update_vn_entropy_pca(pca_dim=pca_dim, use_pca=self.vn_entropy_use_pca)
+
+        self.actor_module.eval()
+
+        micro_batch_size = data.meta_info["micro_batch_size"]
+        temperature = data.meta_info["temperature"]
+        use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
+        pad_token_id = data.meta_info.get("pad_token_id", 0)
+        has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
+
+        select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
+        non_tensor_select_keys = ["multi_modal_inputs"] if has_multi_modal_inputs else []
+        if self.use_prefix_grouper:
+            select_keys += [k for k in ["prompts", "response_mask"] if k in data.batch]
+            if "uid" in data.non_tensor_batch:
+                non_tensor_select_keys.append("uid")
+
+        data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+
+        if use_dynamic_bsz:
+            max_token_len = data.meta_info["max_token_len"] * self.ulysses_sequence_parallel_size
+            micro_batches, batch_idx_list = prepare_dynamic_batch(data, max_token_len=max_token_len)
+        else:
+            micro_batches = data.split(micro_batch_size)
+
+        vn_entropy_lst = []
+        for micro_batch in micro_batches:
+            micro_batch = micro_batch.to(get_device_id())
+            model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch, "pad_token_id": pad_token_id}
+            with torch.no_grad():
+                if self.use_fused_kernels:
+                    original_use_fused_kernels = self.use_fused_kernels
+                    self.use_fused_kernels = False
+                    try:
+                        outputs = self._forward_micro_batch(
+                            model_inputs, temperature=temperature, return_logits=True
+                        )
+                    finally:
+                        self.use_fused_kernels = original_use_fused_kernels
+                else:
+                    outputs = self._forward_micro_batch(model_inputs, temperature=temperature, return_logits=True)
+            logits = outputs["logits"]
+            vn_entropy = self.vn_entropy_calculator.compute_vn_entropy(logits=logits, top_p_percent=top_p)
+            vn_entropy_lst.append(vn_entropy)
+
+        vn_entropy = torch.concat(vn_entropy_lst, dim=0)
+        if use_dynamic_bsz:
+            vn_entropy = restore_dynamic_batch(vn_entropy, batch_idx_list)
+        return vn_entropy
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
     def compute_log_prob(self, data: DataProto, calculate_entropy: bool = False) -> dict[str, torch.Tensor]:

@@ -62,6 +62,26 @@ class RayDAPOTrainer(RayPPOTrainer):
             old_log_prob.batch.pop("entropys")
             batch = batch.union(old_log_prob)
 
+        pca_freq = self.config.trainer.get("pca_freq", 10)
+        pca_dim = self.config.trainer.get("pca_dim", 256)
+        if pca_freq and pca_freq > 0:
+            last_pca_step = getattr(self, "_vn_entropy_last_pca_step", None)
+            if last_pca_step != self.global_steps and (self.global_steps - 1) % pca_freq == 0:
+                with marked_timer("update_pca", timing_raw, "purple"):
+                    self.actor_rollout_wg.update_vn_entropy_pca(pca_dim=pca_dim, use_pca=True)
+                self._vn_entropy_last_pca_step = self.global_steps
+
+        vn_entropy_top_p = self.config.trainer.get("vn_entropy_top_p", 0.99)
+        batch.meta_info["vn_entropy_top_p"] = vn_entropy_top_p
+
+        with marked_timer("vn_entropy", timing_raw, "purple"):
+            vn_entropy_out = self.actor_rollout_wg.compute_vn_entropy(batch)
+            vn_entropies = vn_entropy_out.batch["vn_entropy"]
+            response_masks = batch.batch["response_mask"]
+            loss_agg_mode = self.config.actor_rollout_ref.actor.loss_agg_mode
+            vn_entropy_agg = agg_loss(loss_mat=vn_entropies, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
+            metrics["actor/vn_entropy"] = vn_entropy_agg.detach().item()
+
         if self.use_reference_policy:
             # compute reference log_prob
             with marked_timer("ref", timing_raw, "olive"):
