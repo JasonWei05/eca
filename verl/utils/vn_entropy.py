@@ -1,8 +1,6 @@
-
 import torch
 import torch.nn.functional as F
-from typing import Optional, Tuple, Dict
-import numpy as np
+
 
 class VNEntropyCalculator:
     """
@@ -35,7 +33,7 @@ class VNEntropyCalculator:
             # randomized SVD is faster
             U, S, Vh = torch.svd_lowrank(centered.T, q=n_components)
             return U
-        except:
+        except Exception:
             # Fallback
             U, S, Vh = torch.linalg.svd(centered.T, full_matrices=False)
             return U[:, :n_components]
