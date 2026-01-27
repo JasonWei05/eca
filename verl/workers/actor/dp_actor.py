@@ -529,7 +529,7 @@ class DataParallelPPOActor(BasePPOActor):
                 else:
                     outputs = self._forward_micro_batch(model_inputs, temperature=temperature, return_logits=True)
             logits = outputs["logits"]
-            vn_entropy = self.vn_entropy_calculator.compute_vn_entropy(logits=logits, top_p_percent=top_p)
+            vn_entropy = self.vn_entropy_calculator.compute_vn_entropy(logits=logits, top_p=top_p)
             vn_entropy_lst.append(vn_entropy)
 
         vn_entropy = torch.concat(vn_entropy_lst, dim=0)

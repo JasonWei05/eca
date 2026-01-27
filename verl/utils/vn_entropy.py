@@ -58,14 +58,14 @@ class VNEntropyCalculator:
             self.embeddings = F.normalize(new_embedding_matrix.float(), dim=-1)
             self.embeddings_proj = self.embeddings
 
-    def compute_vn_entropy(self, logits: torch.Tensor, top_p_percent: float) -> torch.Tensor:
+    def compute_vn_entropy(self, logits: torch.Tensor, top_p: float) -> torch.Tensor:
         """
         Compute VN entropy for a batch of logits.
-        
+
         Args:
             logits: (batch_size, seq_len, vocab_size)
-            top_p_percent: float, e.g. 0.99
-            
+            top_p: float in [0, 1], e.g. 0.99 means top 99% of probability mass
+
         Returns:
             vn_entropy: (batch_size, seq_len)
         """
@@ -94,13 +94,13 @@ class VNEntropyCalculator:
         # If top-p cutoff is smaller than K, zero out the rest.
         # Renormalize.
         
-        K = 100 # Reasonable upper bound for top-p=0.99
+        K = 500  # Upper bound for top-p filtering
         
         top_probs, top_indices = torch.topk(probs, K, dim=-1)
         # top_probs: (B, L, K)
         
         cumsum = torch.cumsum(top_probs, dim=-1)
-        mask = cumsum <= top_p_percent
+        mask = cumsum <= top_p
         # Include the first token that exceeds threshold
         # (cumsum shift right, fill 0, < top_p)
         mask = torch.cat([torch.ones_like(mask[..., :1]), mask[..., :-1]], dim=-1)
