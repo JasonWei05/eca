@@ -1,28 +1,24 @@
 import argparse
 import json
-import os
+import urllib.request
 from pathlib import Path
 from typing import Optional
-import urllib.request
 
-import numpy as np
 import torch
-import torch.nn.functional as F
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 from entropy_comparison import (
-    VNEntropyCalculator,
     RunResult,
-    compute_shannon_entropy,
-    extract_boxed_answer,
+    VNEntropyCalculator,
+    build_chat_messages,
     check_answer,
     compute_analysis_summary,
+    compute_shannon_entropy,
     create_plots,
-    save_result_to_jsonl,
+    extract_boxed_answer,
     load_completed_runs,
-    build_chat_messages,
+    save_result_to_jsonl,
 )
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 def build_prompts(tokenizer, questions: list[str]) -> list[str]:
@@ -246,7 +242,7 @@ def main():
         for (q_idx, run_idx, question, correct_answer), (
             output_text,
             logits_list,
-        ) in zip(batch_tasks, batch_outputs):
+        ) in zip(batch_tasks, batch_outputs, strict=False):
             extracted = extract_boxed_answer(output_text)
             is_correct = check_answer(extracted, correct_answer)
             shannon_entropies = [compute_shannon_entropy(lg) for lg in logits_list]

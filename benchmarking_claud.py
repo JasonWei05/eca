@@ -3,9 +3,10 @@ Fixed von Neumann entropy methods.
 Bug fix: torch.diagonal needs dim1=-2, dim2=-1 (not both -1)
 """
 
+import time
+
 import torch
 import torch.nn.functional as F
-import time
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True

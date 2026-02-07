@@ -4,13 +4,13 @@ For N random token pairs, check if measurement_a[i] > measurement_a[j]
 implies measurement_b[i] > measurement_b[j].
 """
 
-import os
 import json
+from itertools import combinations
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
 from safetensors import safe_open
-from itertools import combinations
 
 MODEL_PATH = "/home/tiger/jason/eca/Qwen3-4b-Instruct"
 CACHE_FILE = "/home/tiger/jason/eca/aime_outputs.json"

@@ -5,10 +5,11 @@ Caches logits to disk so decoding only happens once.
 """
 
 import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import matplotlib.pyplot as plt
 from safetensors import safe_open
 
 MODEL_PATH = "Qwen/Qwen3-235B-A22B-Thinking-2507-FP8"
@@ -55,8 +56,8 @@ def compute_vn_entropy(logits_seq, embedding_matrix, pca_matrices, top_k, pca_di
 
 def generate_and_cache():
     """Run inference and save logits + metadata to disk."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer
     from datasets import load_dataset
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     print("Loading dataset...")
     ds = load_dataset("Maxwell-Jia/AIME_2024", split="train")
@@ -122,6 +123,7 @@ def generate_and_cache():
 
 def main():
     import json
+
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     # Load or generate

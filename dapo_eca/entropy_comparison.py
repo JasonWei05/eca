@@ -14,8 +14,8 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
+import torch.nn.functional as F
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -345,7 +345,7 @@ def create_plots(results: list[RunResult], output_dir: Path, top_p_values: list[
     vn_vals = []
     for r in results:
         if default_key in r.vn_entropies:
-            for s, v in zip(r.shannon_entropies, r.vn_entropies[default_key]):
+            for s, v in zip(r.shannon_entropies, r.vn_entropies[default_key], strict=False):
                 shannon_vals.append(s)
                 vn_vals.append(v)
 
@@ -516,7 +516,7 @@ def main():
         for (q_idx, run_idx, question, correct_answer), (
             output_text,
             logits_list,
-        ) in zip(batch_tasks, batch_outputs):
+        ) in zip(batch_tasks, batch_outputs, strict=False):
             extracted = extract_boxed_answer(output_text)
             is_correct = check_answer(extracted, correct_answer)
 

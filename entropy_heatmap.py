@@ -5,11 +5,12 @@ Produces heatmaps for Shannon + 3 VN entropy configs on first 2 AIME responses.
 """
 
 import json
+
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
 from matplotlib.patches import FancyBboxPatch
 from safetensors import safe_open
 
@@ -63,7 +64,7 @@ def render_heatmap(tokens, values, title, output_path, logits_seq=None, tokenize
             top5 = torch.topk(logits_seq[i], 5, dim=-1)
             top5_probs = F.softmax(logits_seq[i].float(), dim=-1)[top5.indices].tolist()
             parts = []
-            for tid, p in zip(top5.indices.tolist(), top5_probs):
+            for tid, p in zip(top5.indices.tolist(), top5_probs, strict=False):
                 alt = tokenizer.decode([tid]).strip()
                 if not alt:
                     alt = "·"
@@ -84,7 +85,7 @@ def render_heatmap(tokens, values, title, output_path, logits_seq=None, tokenize
     current_row = []
     current_x = x_pad
     max_x = fig_width - x_pad
-    for i, (dtok, bw) in enumerate(zip(display_tokens, box_widths)):
+    for i, (dtok, bw) in enumerate(zip(display_tokens, box_widths, strict=False)):
         if current_x + bw > max_x and current_row:
             rows.append(current_row)
             current_row = []

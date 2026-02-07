@@ -51,7 +51,7 @@ def convert_aime2025(output_path: str) -> None:
     # Create DataFrame
     df = pd.DataFrame(records)
 
-    print(f"\nConverted dataset:")
+    print("\nConverted dataset:")
     print(f"  Rows: {len(df)}")
     print(f"  Columns: {list(df.columns)}")
     print(f"  data_source: {df['data_source'].unique().tolist()}")
