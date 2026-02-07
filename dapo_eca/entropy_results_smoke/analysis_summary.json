@@ -1,0 +1,35 @@
+{
+  "global_summary": {
+    "total_questions": 1,
+    "total_runs": 1,
+    "overall_accuracy": 0.0,
+    "avg_shannon_correct": null,
+    "avg_shannon_incorrect": 0.019671428948640823,
+    "avg_vn_correct": {
+      "p95.0": null,
+      "p99.0": null,
+      "p99.5": null
+    },
+    "avg_vn_incorrect": {
+      "p95.0": 0.3472954500466585,
+      "p99.0": 0.3472954500466585,
+      "p99.5": 0.3472954500466585
+    }
+  },
+  "question_summaries": [
+    {
+      "question_idx": 0,
+      "num_correct": 0,
+      "num_runs": 1,
+      "accuracy": 0.0,
+      "avg_shannon_entropy": 0.019671428948640823,
+      "avg_vn_entropies": {
+        "p95.0": 0.3472954500466585,
+        "p99.0": 0.3472954500466585,
+        "p99.5": 0.3472954500466585
+      },
+      "avg_shannon_correct": null,
+      "avg_shannon_incorrect": 0.019671428948640823
+    }
+  ]
+}
