@@ -603,7 +603,9 @@ class AlgoConfig(BaseConfig):
     lam: float = 1.0
     adv_estimator: str = "gae"
     norm_adv_by_std_in_grpo: bool = True
-    linear: bool = False
+    eca_linear: bool = False
+    eca_softmax: bool = False
+    eca_gamma: float = 1.0
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"
     kl_ctrl: KLControlConfig = field(default_factory=KLControlConfig)
