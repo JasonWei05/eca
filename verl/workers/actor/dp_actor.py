@@ -101,7 +101,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         self.vn_entropy_calculator = None
         self.vn_entropy_pca_dim = None
-        self.vn_entropy_use_pca = True
+        self.vn_entropy_top_k = None
 
         # Sum of squared probabilities computation (for optimal_token_baseline)
         # Only initialize if calculate_sum_pi_squared config is enabled
@@ -446,8 +446,10 @@ class DataParallelPPOActor(BasePPOActor):
         return grad_norm
 
     def _get_embedding_matrix(self) -> torch.Tensor:
+        """Extract embedding matrix from model, handling FSDP sharding."""
         model = self.actor_module
         param_ctx = nullcontext()
+
         if isinstance(model, FSDP):
             param_ctx = FSDP.summon_full_params(model, writeback=False, recurse=False)
 
@@ -467,34 +469,47 @@ class DataParallelPPOActor(BasePPOActor):
             weight = embeddings.weight
             if hasattr(weight, "full_tensor"):
                 weight = weight.full_tensor()
-            return weight.detach()
 
-    def update_vn_entropy_pca(self, pca_dim: int = 512, use_pca: bool = True):
+            # Clone within FSDP context (tensor becomes invalid after exiting)
+            return weight.detach().clone()
+
+    def update_vn_entropy_pca(self, pca_dim: int = 64, top_k: int = 64):
+        """Initialize or update VN entropy calculator with new PCA projection."""
+        logger.info(f"[dp_actor] update_vn_entropy_pca: START (pca_dim={pca_dim}, top_k={top_k})")
         embedding_matrix = self._get_embedding_matrix()
+        logger.info(f"[dp_actor] update_vn_entropy_pca: got embedding_matrix {embedding_matrix.shape}")
         self.vn_entropy_pca_dim = pca_dim
-        self.vn_entropy_use_pca = use_pca
+        self.vn_entropy_top_k = top_k
         if self.vn_entropy_calculator is None:
+            logger.info("[dp_actor] update_vn_entropy_pca: creating new VNEntropyCalculator")
             self.vn_entropy_calculator = VNEntropyCalculator(
                 embedding_matrix=embedding_matrix,
                 pca_dim=pca_dim,
-                use_pca=use_pca,
+                top_k=top_k,
             )
+            logger.info("[dp_actor] update_vn_entropy_pca: VNEntropyCalculator created")
         else:
-            self.vn_entropy_calculator.pca_dim = pca_dim
-            self.vn_entropy_calculator.use_pca = use_pca
+            logger.info("[dp_actor] update_vn_entropy_pca: updating existing calculator")
+            self.vn_entropy_calculator.top_k = top_k
             self.vn_entropy_calculator.update_pca(embedding_matrix)
+            logger.info("[dp_actor] update_vn_entropy_pca: calculator updated")
 
-    def compute_vn_entropy(self, data: DataProto, top_p: float) -> torch.Tensor:
+    def compute_vn_entropy(self, data: DataProto) -> torch.Tensor:
+        """Compute VN entropy for all positions in the batch."""
+        logger.info("[dp_actor] compute_vn_entropy: START")
         if self.vn_entropy_calculator is None:
-            pca_dim = self.vn_entropy_pca_dim or 256
-            self.update_vn_entropy_pca(pca_dim=pca_dim, use_pca=self.vn_entropy_use_pca)
+            pca_dim = data.meta_info["vn_entropy_pca_dim"]
+            top_k = data.meta_info["vn_entropy_top_k"]
+            logger.info(f"[dp_actor] compute_vn_entropy: initializing calculator with pca_dim={pca_dim}, top_k={top_k}")
+            self.update_vn_entropy_pca(pca_dim=pca_dim, top_k=top_k)
 
         self.actor_module.eval()
 
         micro_batch_size = data.meta_info["micro_batch_size"]
         temperature = data.meta_info["temperature"]
         use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
-        pad_token_id = data.meta_info.get("pad_token_id", 0)
+        pad_token_id = data.meta_info["pad_token_id"]
+        chunk_size = data.meta_info["vn_entropy_chunk_size"]
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
@@ -512,10 +527,13 @@ class DataParallelPPOActor(BasePPOActor):
         else:
             micro_batches = data.split(micro_batch_size)
 
+        logger.info(f"[dp_actor] compute_vn_entropy: processing {len(micro_batches)} micro_batches")
         vn_entropy_lst = []
-        for micro_batch in micro_batches:
+        for i, micro_batch in enumerate(micro_batches):
+            logger.info(f"[dp_actor] compute_vn_entropy: micro_batch {i}/{len(micro_batches)} - moving to device")
             micro_batch = micro_batch.to(get_device_id())
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch, "pad_token_id": pad_token_id}
+            logger.info(f"[dp_actor] compute_vn_entropy: micro_batch {i}/{len(micro_batches)} - forward pass START")
             with torch.no_grad():
                 if self.use_fused_kernels:
                     original_use_fused_kernels = self.use_fused_kernels
@@ -528,13 +546,22 @@ class DataParallelPPOActor(BasePPOActor):
                         self.use_fused_kernels = original_use_fused_kernels
                 else:
                     outputs = self._forward_micro_batch(model_inputs, temperature=temperature, return_logits=True)
-            logits = outputs["logits"]
-            vn_entropy = self.vn_entropy_calculator.compute_vn_entropy(logits=logits, top_p=top_p)
-            vn_entropy_lst.append(vn_entropy)
+                logits = outputs["logits"]
+                del outputs
+                logger.info(
+                    f"[dp_actor] compute_vn_entropy: micro_batch {i}/{len(micro_batches)} - "
+                    f"computing VN entropy for logits {logits.shape}"
+                )
+                vn_entropy = self.vn_entropy_calculator.compute_vn_entropy(logits=logits, chunk_size=chunk_size)
+                del logits
+            logger.info(f"[dp_actor] compute_vn_entropy: micro_batch {i}/{len(micro_batches)} - VN entropy computed")
+            vn_entropy_lst.append(vn_entropy.cpu())
 
+        logger.info("[dp_actor] compute_vn_entropy: concatenating results")
         vn_entropy = torch.concat(vn_entropy_lst, dim=0)
         if use_dynamic_bsz:
             vn_entropy = restore_dynamic_batch(vn_entropy, batch_idx_list)
+        logger.info(f"[dp_actor] compute_vn_entropy: DONE, output shape {vn_entropy.shape}")
         return vn_entropy
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
@@ -567,7 +594,7 @@ class DataParallelPPOActor(BasePPOActor):
         micro_batch_size = data.meta_info["micro_batch_size"]
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
         use_dynamic_bsz = data.meta_info["use_dynamic_bsz"]
-        pad_token_id = data.meta_info.get("pad_token_id", 0)
+        pad_token_id = data.meta_info["pad_token_id"]
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
 
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
@@ -627,7 +654,7 @@ class DataParallelPPOActor(BasePPOActor):
         self.actor_module.train()
 
         temperature = data.meta_info["temperature"]  # temperature must be in the data.meta_info to avoid silent error
-        pad_token_id = data.meta_info.get("pad_token_id", 0)
+        pad_token_id = data.meta_info["pad_token_id"]
 
         select_keys = [
             "responses",

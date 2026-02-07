@@ -1147,34 +1147,35 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-    def update_vn_entropy_pca(self, pca_dim: int = 512, use_pca: bool = True):
+    def update_vn_entropy_pca(self, pca_dim: int = 64, top_k: int = 64):
+        """Initialize or update VN entropy calculator with new PCA projection."""
         assert self._is_actor
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
-            
-        self.actor.update_vn_entropy_pca(pca_dim=pca_dim, use_pca=use_pca)
-        
-        if self._is_offload_param:
-            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+
+        try:
+            self.actor.update_vn_entropy_pca(pca_dim=pca_dim, top_k=top_k)
+        finally:
+            if self._is_offload_param:
+                offload_fsdp_model_to_cpu(self.actor_module_fsdp)
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     def compute_vn_entropy(self, data: DataProto):
+        """Compute VN entropy for the batch."""
         assert self._is_actor
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
 
-        # similar to compute_log_prob setup
-        # Use rollout config for batch sizes as we are processing the rollout batch
-        data.meta_info["micro_batch_size"] = self.config.rollout.log_prob_micro_batch_size_per_gpu
+        # Use smaller batches since return_logits=True holds full (B, L, vocab) in memory
+        log_prob_mbs = self.config.rollout.log_prob_micro_batch_size_per_gpu
+        data.meta_info["micro_batch_size"] = max(1, log_prob_mbs // 4) if log_prob_mbs is not None else None
         data.meta_info["max_token_len"] = self.config.rollout.log_prob_max_token_len_per_gpu
         data.meta_info["use_dynamic_bsz"] = self.config.rollout.log_prob_use_dynamic_bsz
         data.meta_info["temperature"] = self.config.rollout.temperature
         data.meta_info.setdefault("pad_token_id", self.tokenizer.pad_token_id)
-        
-        top_p = data.meta_info.get("vn_entropy_top_p", 0.9)
 
         with self.ulysses_sharding_manager:
-            outputs = self.actor.compute_vn_entropy(data=data, top_p=top_p)
+            outputs = self.actor.compute_vn_entropy(data=data)
             # outputs is a Tensor (bs, seq_len)
             output = DataProto.from_dict(
                 tensors={"vn_entropy": outputs},

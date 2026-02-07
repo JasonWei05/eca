@@ -51,9 +51,9 @@ pre-commit run --all-files autogen-trainer-cfg
 ```
 
 The pre-commit hooks include:
-- `ruff` - Python linting and formatting
-- `mypy` - Type checking (limited to specific modules)
-- `autogen-trainer-cfg` - Auto-generate trainer config YAMLs
+- `ruff` - Linting (rules: E, F, UP, B, I, G) and formatting. Line length 120. Config in `pyproject.toml`. Ignored rules: F405, F403, E731, B007, UP032, G004, UP045, UP035.
+- `mypy` - Type checking. Only 4 modules enforced (`ignore_errors=false`): `verl.trainer.config.algorithm`, `verl.trainer.ppo.core_algos`, `verl.trainer.ppo.reward`, `verl.workers.reward_manager`. All other modules have `ignore_errors=true`.
+- `autogen-trainer-cfg` - Generates `_generated_ppo_trainer.yaml` and `_generated_ppo_megatron_trainer.yaml` from Hydra configs via `scripts/generate_trainer_config.sh`. CI fails if generated files are stale.
 - `check-docstrings` - Doc string coverage check
 - `check-license` - License header verification
 - `compileall` - Python compilation check
@@ -64,6 +64,12 @@ The pre-commit hooks include:
 ```bash
 # All CPU tests (test files ending with *_on_cpu.py)
 pytest -s -x --asyncio-mode=auto tests/
+```
+
+**Single test file or test function:**
+```bash
+pytest -s -x tests/path/to/test_file.py
+pytest -s -x tests/path/to/test_file.py::test_name
 ```
 
 **GPU unit tests:**
@@ -86,31 +92,25 @@ torchrun --standalone --nnodes=1 --nproc-per-node=2 tests/workers/actor/test_spe
 - `tests/special_sanity/` - Quick sanity checks
 - Tests ending with `_on_cpu.py` run on CPU only
 
-### Running Examples
+### Entry Points & Examples
 
-Training examples are in `examples/` directory:
+**Training invocation:** `python -m verl.trainer.main_ppo` (Hydra-configured)
 
-```bash
-# PPO training example
-bash examples/ppo_trainer/run_deepseek7b_llm.sh
-
-# GRPO training example
-bash examples/grpo_trainer/run_qwen3-8b.sh
-
-# All examples use python -m verl.trainer.main_<algorithm> with Hydra configs
+**Runtime call chain:**
+```
+main_ppo.py:main()  →  run_ppo(config)  →  TaskRunner.run()
+    ├── create_rl_dataset() + create_rl_sampler()
+    ├── RayPPOTrainer.__init__()
+    ├── RayPPOTrainer.init_workers()
+    └── RayPPOTrainer.fit()   # main training loop
 ```
 
-### Building Documentation
+Other entry points: `main_eval.py` (offline evaluation), `main_generation.py` (batch generation), `main_generation_server.py` (generation server).
 
+**Shell script examples:**
 ```bash
-cd docs
-pip install -r requirements-docs.txt
-make clean
-make html
-
-# Preview locally
-python -m http.server -d _build/html/
-# Visit http://localhost:8000
+bash examples/ppo_trainer/run_deepseek7b_llm.sh
+bash examples/grpo_trainer/run_qwen3-8b.sh
 ```
 
 ## Code Architecture
@@ -149,6 +149,7 @@ class DataProto:
 - TensorDict allows treating dict of tensors as a single tensor for vectorized ops
 - DataProto handles batching, chunking, concatenation, GPU/CPU transfers
 - Methods: `.chunk(n)`, `.concat(list)`, serialization for Ray transport
+- **DataProtoFuture**: Wraps `list[ray.ObjectRef]` to enable async data flow between workers without resolving futures on the driver. Supports `.get()` to materialize.
 
 ### Dispatch Modes (Data Distribution)
 
@@ -159,36 +160,6 @@ The `@register` decorator in `verl/single_controller/base/decorator.py` controls
 - `DP_COMPUTE` - Distribute across data-parallel ranks (training)
 - `DP_COMPUTE_PROTO` - Like DP_COMPUTE for DataProto objects (rollouts)
 - `RANK_ZERO` - Only rank 0 executes (logging, collection)
-
-### Directory Structure
-
-```
-verl/
-├── protocol.py              # DataProto - core data exchange format
-├── base_config.py           # Base configuration classes
-├── single_controller/       # Ray orchestration layer
-│   ├── base/               # Worker, WorkerGroup, Dispatcher base classes
-│   └── ray/                # Ray-specific implementations (RayWorkerGroup)
-├── workers/                # Worker implementations
-│   ├── engine/             # Training backends (FSDP, Megatron, VEOmni)
-│   ├── rollout/            # Rollout workers (vLLM, SGLang, TRT-LLM)
-│   ├── engine_workers.py   # TrainingWorker, ActorRolloutRefWorker
-│   └── config.py           # Worker config dataclasses
-├── trainer/                # Training orchestrators
-│   ├── ppo/
-│   │   ├── ray_trainer.py  # RayPPOTrainer (main coordinator)
-│   │   ├── core_algos.py   # RL algorithms (GAE, GRPO, etc.)
-│   │   └── reward.py       # Reward computation
-│   └── config/             # Hydra configuration templates (YAML)
-├── models/                 # Model implementations
-├── utils/                  # Utilities (device, tensor ops, logging)
-└── experimental/           # Experimental features
-
-examples/                   # Training examples (PPO, GRPO, RLOO, etc.)
-tests/                      # Unit and integration tests
-recipe/                     # Training recipes (git submodule)
-docs/                       # Sphinx documentation
-```
 
 ### PPO Training Loop Flow
 
@@ -210,7 +181,9 @@ docs/                       # Sphinx documentation
 - `ray/base.py` - RayWorkerGroup manages Ray actors
 
 **Workers** (`verl/workers/`):
-- `engine_workers.py` - TrainingWorker, ActorRolloutRefWorker
+- `engine_workers.py` (608 lines) - **New unified** TrainingWorker + ActorRolloutRefWorker. Used when `trainer.use_legacy_worker_impl="disable"`.
+- `fsdp_workers.py` (2067 lines) - **Legacy** FSDP worker implementations. Used when `trainer.use_legacy_worker_impl="auto"` (default) or `"enable"` with FSDP backend.
+- `megatron_workers.py` (1498 lines) - **Legacy** Megatron worker implementations. Used with Megatron backend.
 - `engine/base.py` - BaseEngine abstract interface
 - `rollout/base.py` - BaseRollout abstract interface
 
@@ -218,6 +191,8 @@ docs/                       # Sphinx documentation
 - `ray_trainer.py` - Main training loop orchestrator
 - `core_algos.py` - All RL algorithms (300+ lines of advantage estimation)
 - Algorithm selection via config: `algorithm.adv_estimator=gae|grpo|reinforce_plus_plus|rloo`
+
+**Experimental** (`verl/experimental/`): Features under development including `fully_async_policy`, `transfer_queue`, `one_step_off_policy`, `vla`, `agent_loop`, `reward_loop`, `dynamic_dataset`.
 
 ## Extension Points
 
@@ -259,6 +234,7 @@ verl uses Hydra for configuration management:
 - Override via command line: `trainer.n_gpus_per_node=8 data.train_batch_size=1024`
 - Config dataclasses in `verl/workers/config.py` and `verl/trainer/config/`
 - Auto-generated configs via `scripts/generate_trainer_config.sh` (pre-commit hook)
+- Component subdirectories: `actor/`, `critic/`, `data/`, `rollout/`, `algorithm/`, `engine/`, `model/`, `optim/`, `profiler/`, `ref/`, `reward_model/`
 
 ## Important Notes
 
@@ -266,7 +242,8 @@ verl uses Hydra for configuration management:
 - **vLLM 0.8+ features**: Enable cuda graph with `actor_rollout_ref.rollout.enforce_eager=False`
 - **Recipe submodule**: Run `git submodule update --init --recursive recipe` to get training recipes
 - **3D-HybridEngine**: VEOmni engine reshards actor between generation (TP=1) and training (full TP) for efficiency
-- **Flexible device mapping**: Use resource pools in config to assign GPUs to different worker groups
+- **GPU colocating**: `max_colocate_count` in `RayResourcePool` controls how many WorkerGroups share one GPU. Use 1 for FSDP (all roles in one process), 3+ for Megatron (separate actor/critic/rollout processes).
+- **Docs**: Build with `cd docs && pip install -r requirements-docs.txt && make html`
 
 ## Quick Start for Common Tasks
 
@@ -285,17 +262,8 @@ verl uses Hydra for configuration management:
 2. Check `verl/trainer/ppo/metric_utils.py` for metrics
 3. Tune batch sizes, gradient accumulation, offloading in config YAML
 
+**Utility scripts:** `scripts/diagnose.py` (environment diagnostics), `scripts/converter_hf_to_mcore.py` (HF→Megatron checkpoint conversion), `scripts/rollout_viewer.py` (TUI for viewing rollout data).
+
 ## Contributing
 
-See CONTRIBUTING.md for:
-- Finding issues to contribute (good first issues, call for contribution)
-- Code linting and formatting setup
-- Testing requirements
-- PR guidelines and review process
-- CI test workflow structure
-
-When adding new features:
-1. Add corresponding CI tests in `.github/workflows/`
-2. Update documentation in `docs/`
-3. Follow pre-commit hooks (ruff formatting, license headers)
-4. Minimize test workload (see existing test scripts for examples)
+See CONTRIBUTING.md for code style, testing requirements, PR guidelines, and CI workflow details.
