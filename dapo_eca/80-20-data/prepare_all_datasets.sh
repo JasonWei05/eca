@@ -6,20 +6,28 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 # Output directory for prepared data
 DATA_DIR="${DATA_DIR:-${HOME}/verl/data}"
+OVERWRITE="${OVERWRITE:-0}"
 mkdir -p "${DATA_DIR}"
 
-# Source files
-TRAIN_SOURCE="${SCRIPT_DIR}/math__combined_54.4k.parquet"
+# Source files (download if not present)
+TRAIN_SOURCE="${DATA_DIR}/math__combined_54.4k.parquet"
+export TRAIN_SOURCE
+if [[ ! -f "${TRAIN_SOURCE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Downloading training source dataset..."
+  wget -O "${TRAIN_SOURCE}" \
+    "https://huggingface.co/datasets/LLM360/guru-RL-92k/resolve/main/train/math__combined_54.4k.parquet"
+else
+  echo "Training source already exists: ${TRAIN_SOURCE}"
+fi
 
 # Output files
 TRAIN_FILE="${DATA_DIR}/math__combined_54.4k_filtered.parquet"
+export TRAIN_FILE
 AIME2024_8X_FILE="${DATA_DIR}/math__aime2024_repeated_8x_240.parquet"
 AIME2024_32X_FILE="${DATA_DIR}/math__aime2024_repeated_32x_960.parquet"
 AIME2025_FILE="${DATA_DIR}/math__aime2025_30.parquet"
 AIME2025_32X_FILE="${DATA_DIR}/math__aime2025_repeated_32x_960.parquet"
 MATH500_FILE="${DATA_DIR}/math__math_500.parquet"
-
-OVERWRITE="${OVERWRITE:-0}"
 
 echo "=== Dataset Preparation ==="
 echo "Data directory: ${DATA_DIR}"
@@ -117,6 +125,28 @@ python3 "${SCRIPT_DIR}/filter_test_dataset_keys.py" --input_file "${AIME2024_8X_
 python3 "${SCRIPT_DIR}/filter_test_dataset_keys.py" --input_file "${AIME2024_32X_FILE}"
 python3 "${SCRIPT_DIR}/filter_test_dataset_keys.py" --input_file "${MATH500_FILE}"
 # AIME 2025 is already in correct format from convert_aime2025.py
+
+# Step 6: Set distinct data_source values for log/metric distinguishability
+# Reward scorer recognizes: "math", "math500", and anything starting with "aime"
+echo ""
+echo "Setting data_source labels..."
+python3 -c "
+import pandas as pd, sys, os
+updates = [
+    ('${AIME2024_8X_FILE}', 'aime2024'),
+    ('${AIME2024_32X_FILE}', 'aime2024'),
+    ('${AIME2025_32X_FILE}', 'aime2025'),
+    ('${MATH500_FILE}', 'math500'),
+]
+for path, ds in updates:
+    if not os.path.exists(path):
+        print(f'SKIP (not found): {path}')
+        continue
+    df = pd.read_parquet(path)
+    df['data_source'] = ds
+    df.to_parquet(path, index=False)
+    print(f'  {os.path.basename(path)}: data_source -> {ds}')
+"
 
 echo ""
 echo "=== Summary ==="

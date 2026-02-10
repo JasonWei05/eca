@@ -28,7 +28,7 @@ def convert_aime2025(output_path: str) -> None:
             problem_text += " Please output the final answer within \\boxed{}."
 
         record = {
-            "data_source": "math",  # Normalized for reward scoring compatibility
+            "data_source": "aime2025",  # Starts with "aime" so routes to math_dapo scorer
             "prompt": [
                 {
                     "content": problem_text,

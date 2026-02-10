@@ -34,15 +34,9 @@ def filter_parquet_file(input_path: str, output_path: str, required_keys: list[s
     # Filter to keep only the available required keys
     filtered_df = df[available_keys].copy()
 
-    # Normalize data_source to "math" for compatibility with reward scoring
-    # The reward scorer expects "math", "math_dapo", "math_dapo_reasoning", or strings starting with "aime"
+    # Do not modify data_source here — the caller is responsible for setting it
     if 'data_source' in filtered_df.columns:
-        original_ds = filtered_df['data_source'].unique().tolist()
-        # Keep aime prefixed sources as-is, normalize others to "math"
-        filtered_df['data_source'] = filtered_df['data_source'].apply(
-            lambda x: x if str(x).lower().startswith('aime') else 'math'
-        )
-        print(f"Normalized data_source: {original_ds} -> {filtered_df['data_source'].unique().tolist()}")
+        print(f"data_source values: {filtered_df['data_source'].unique().tolist()}")
 
     print(f"Filtered columns: {list(filtered_df.columns)}")
     print(f"Filtered shape: {filtered_df.shape}")
