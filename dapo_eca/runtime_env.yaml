@@ -3,4 +3,5 @@ excludes: ["/.git/", "Qwen3-*/**", "Qwen2.5-*/**", "flash_attn-*.whl*", "dapo_ec
 env_vars:
   TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
   VLLM_USE_V1: "1"
+  LD_PRELOAD: "/home/tiger/miniconda3/envs/eca/lib/glibc_compat.so"
   PATH: "/usr/local/cuda-12.2/bin:/home/tiger/miniconda3/envs/eca/bin:/usr/local/bin:/usr/bin:/bin"

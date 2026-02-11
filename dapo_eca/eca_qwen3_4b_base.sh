@@ -1,18 +1,19 @@
 #!/bin/bash
 
-ray stop --force
-ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8                 
+export LD_PRELOAD=/home/tiger/miniconda3/envs/eca/lib/glibc_compat.so
+export RAY_TMPDIR=/data02/ray_tmp
 
-export RAY_TMPDIR=/data02/ray_tmp             
+ray stop --force
+ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base'
+exp_name='DAPO-Qwen3-4B-Base-normal-512batchsz-16updates'
 
 adv_estimator=grpo
 
 use_kl_in_reward=False
 kl_coef=0.0
-use_kl_loss=False
+use_kl_loss=Falseå
 kl_loss_coef=0.0
 
 clip_ratio_low=0.2
@@ -36,10 +37,10 @@ vn_entropy_chunk_size=8192
 enable_filter_groups=False
 filter_groups_metric=acc
 max_num_gen_batches=1
-train_prompt_bsz=256
+train_prompt_bsz=512
 gen_prompt_bsz=$((train_prompt_bsz * 1))
 n_resp_per_prompt=16
-train_prompt_mini_bsz=64
+train_prompt_mini_bsz=32
 
 RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
 WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason_wei/eca"}
@@ -123,11 +124,12 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.temperature=${temperature} \
     actor_rollout_ref.rollout.top_p=${top_p} \
     actor_rollout_ref.rollout.top_k="${top_k}" \
-    actor_rollout_ref.rollout.val_kwargs.temperature=${temperature} \
+    actor_rollout_ref.rollout.val_kwargs.temperature=0.7 \
     actor_rollout_ref.rollout.val_kwargs.top_p=${top_p} \
     actor_rollout_ref.rollout.val_kwargs.top_k=${top_k} \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
+    actor_rollout_ref.rollout.val_kwargs.max_new_tokens=$((1024 * 10)) \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
