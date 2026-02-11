@@ -109,6 +109,8 @@ class FullyAsyncAgentLoopWorker(AgentLoopWorker):
         if batch.meta_info.get("validate", False):
             sampling_params["top_p"] = config.val_kwargs.top_p
             sampling_params["temperature"] = config.val_kwargs.temperature
+            if config.val_kwargs.max_new_tokens is not None:
+                sampling_params["max_new_tokens"] = config.val_kwargs.max_new_tokens
 
         if "agent_name" not in batch.non_tensor_batch:
             default_agent_loop = config.agent.default_agent_loop

@@ -235,6 +235,7 @@ actor_rollout_ref:
       temperature: 0
       'n': 1
       do_sample: false
+      max_new_tokens: null
     multi_turn:
       _target_: verl.workers.config.MultiTurnConfig
       enable: false
@@ -569,6 +570,9 @@ algorithm:
   lam: 1.0
   adv_estimator: gae
   norm_adv_by_std_in_grpo: true
+  eca_linear: false
+  eca_softmax: false
+  eca_gamma: 1.0
   use_kl_in_reward: false
   kl_penalty: kl
   kl_ctrl:

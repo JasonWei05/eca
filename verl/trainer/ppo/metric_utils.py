@@ -641,6 +641,15 @@ def process_validation_metrics(
                             metric[f"maj@{n}/mean"] = maj_n_mean
                             metric[f"maj@{n}/std"] = maj_n_std
 
+                # Compute unbiased pass@k for acc variable
+                if var_name == "acc" and n_resps > 1:
+                    from math import comb
+
+                    c = int(sum(var_vals))
+                    for k in [2, 8, 32]:
+                        if k <= n_resps:
+                            metric[f"pass@{k}"] = 1.0 - comb(n_resps - c, k) / comb(n_resps, k)
+
                 var_dict[var_name] = metric
 
     # Aggregate metrics across uids

@@ -1589,6 +1589,15 @@ class RayPPOTrainer:
 
                         if reward_extra_infos_dict:
                             batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                            if "acc" in reward_extra_infos_dict:
+                                acc_list = reward_extra_infos_dict["acc"]
+                                n = self.config.actor_rollout_ref.rollout.n
+                                metrics["train/acc/mean"] = np.mean(acc_list)
+                                # pass@n: fraction of prompts where at least one response is correct
+                                if len(acc_list) % n == 0 and n > 1:
+                                    acc_arr = np.array(acc_list).reshape(-1, n)
+                                    pass_at_n = (acc_arr.sum(axis=1) > 0).astype(float)
+                                    metrics[f"train/acc/pass@{n}"] = float(np.mean(pass_at_n))
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
