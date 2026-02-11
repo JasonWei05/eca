@@ -70,15 +70,20 @@ def get_vllm_max_lora_rank(lora_rank: int):
     """
     assert lora_rank > 0, f"lora_rank must be greater than 0, get {lora_rank}"
 
-    from vllm.config.lora import MaxLoRARanks
+    try:
+        from vllm.config.lora import MaxLoRARanks
 
-    vllm_max_lora_ranks = sorted(get_args(MaxLoRARanks))
-    if lora_rank > vllm_max_lora_ranks[-1]:
-        raise ValueError(f"lora_rank must be less than or equal to {vllm_max_lora_ranks[-1]}, but got {lora_rank}")
+        vllm_max_lora_ranks = sorted(get_args(MaxLoRARanks))
+        if lora_rank > vllm_max_lora_ranks[-1]:
+            raise ValueError(
+                f"lora_rank must be less than or equal to {vllm_max_lora_ranks[-1]}, but got {lora_rank}"
+            )
 
-    for rank in vllm_max_lora_ranks:
-        if lora_rank <= rank:
-            return rank
+        for rank in vllm_max_lora_ranks:
+            if lora_rank <= rank:
+                return rank
+    except ImportError:
+        return lora_rank
 
 
 # https://github.com/vllm-project/vllm/issues/13175

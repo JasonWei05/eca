@@ -623,9 +623,17 @@ class RayPPOTrainer:
             test_batch = DataProto.from_single_dict(test_data)
 
             if "uid" not in test_batch.non_tensor_batch:
-                test_batch.non_tensor_batch["uid"] = np.array(
-                    [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
-                )
+                # Hash raw prompt text so repeated problems (e.g. AIME 30
+                # problems x 32 repeats) are grouped for pass@k computation.
+                raw_prompts = test_batch.non_tensor_batch.get("prompt")
+                if raw_prompts is not None:
+                    test_batch.non_tensor_batch["uid"] = np.array(
+                        [str(hash(str(p))) for p in raw_prompts], dtype=object
+                    )
+                else:
+                    test_batch.non_tensor_batch["uid"] = np.array(
+                        [str(uuid.uuid4()) for _ in range(len(test_batch.batch))], dtype=object
+                    )
 
             # repeat test batch
             test_batch = test_batch.repeat(
@@ -739,25 +747,13 @@ class RayPPOTrainer:
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
-            for var_name, metric2val in var2metric2val.items():
-                n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
-                for metric_name, metric_val in metric2val.items():
-                    if (
-                        (var_name == core_var)
-                        and any(metric_name.startswith(pfx) for pfx in ["mean", "maj", "best"])
-                        and (f"@{n_max}" in metric_name)
-                    ):
-                        metric_sec = "val-core"
-                    else:
-                        metric_sec = "val-aux"
-                    pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
-                    metric_dict[pfx] = metric_val
-
-        if len(sample_turns) > 0:
-            sample_turns = np.concatenate(sample_turns)
-            metric_dict["val-aux/num_turns/min"] = sample_turns.min()
-            metric_dict["val-aux/num_turns/max"] = sample_turns.max()
-            metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
+            if core_var not in var2metric2val:
+                continue
+            metric2val = var2metric2val[core_var]
+            n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
+            for metric_name, metric_val in metric2val.items():
+                if metric_name == f"mean@{n_max}" or metric_name == "pass@32":
+                    metric_dict[f"val/{data_source}/{core_var}/{metric_name}"] = metric_val
 
         return metric_dict
 

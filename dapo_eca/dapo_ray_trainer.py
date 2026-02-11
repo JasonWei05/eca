@@ -207,30 +207,6 @@ class RayDAPOTrainer(RayPPOTrainer):
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
 
-                    if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
-                        with marked_timer("gen_max", timing_raw, "red"):
-                            gen_baseline_batch = deepcopy(gen_batch)
-                            gen_baseline_batch.meta_info["do_sample"] = False
-                            gen_baseline_output = self.async_rollout_manager.generate_sequences(gen_baseline_batch)
-
-                            new_batch = new_batch.union(gen_baseline_output)
-                            # compute reward model score on new_batch
-                            rm_scores = None
-                            if self.use_rm and "rm_scores" not in new_batch.batch.keys():
-                                rm_scores = self.rm_wg.compute_rm_score(new_batch)
-                                new_batch = new_batch.union(rm_scores)
-                            reward_baseline_tensor, _ = compute_reward(new_batch, self.reward_fn)
-                            reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
-
-                            keys_to_pop = set(gen_baseline_output.batch.keys())
-                            if rm_scores is not None:
-                                keys_to_pop.update(rm_scores.batch.keys())
-                            new_batch.pop(batch_keys=list(keys_to_pop))
-
-                            new_batch.batch["reward_baselines"] = reward_baseline_tensor
-
-                            del rm_scores, gen_baseline_batch, gen_baseline_output
-
                     new_batch.non_tensor_batch["uid"] = np.array(
                         [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
                     )
@@ -261,6 +237,14 @@ class RayDAPOTrainer(RayPPOTrainer):
                             new_batch.non_tensor_batch.update(
                                 {k: np.array(v) for k, v in reward_extra_infos_dict.items()}
                             )
+                            if "acc" in reward_extra_infos_dict:
+                                acc_list = reward_extra_infos_dict["acc"]
+                                n = self.config.actor_rollout_ref.rollout.n
+                                metrics["train/acc/mean"] = np.mean(acc_list)
+                                if len(acc_list) % n == 0 and n > 1:
+                                    acc_arr = np.array(acc_list).reshape(-1, n)
+                                    pass_at_n = (acc_arr.sum(axis=1) > 0).astype(float)
+                                    metrics[f"train/acc/pass@{n}"] = float(np.mean(pass_at_n))
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
