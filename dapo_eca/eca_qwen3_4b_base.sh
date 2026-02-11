@@ -13,14 +13,15 @@ adv_estimator=grpo
 
 use_kl_in_reward=False
 kl_coef=0.0
-use_kl_loss=Falseå
+use_kl_loss=False
 kl_loss_coef=0.0
 
 clip_ratio_low=0.2
 clip_ratio_high=0.28
 
 max_prompt_length=$((1024 * 2))
-max_response_length=$((1024 * 8))
+train_max_response_length=$((1024 * 8))
+val_max_response_length=$((1024 * 12))
 enable_overlong_buffer=True
 overlong_buffer_len=$((1024 * 2))
 overlong_penalty_factor=1.0
@@ -62,8 +63,8 @@ top_k=-1 # 0 for HF rollout, -1 for vLLM rollout
 # Performance Related Parameter
 sp_size=2
 use_dynamic_bsz=True
-actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) / sp_size))
-infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) / sp_size))
+actor_ppo_max_token_len=$(((max_prompt_length + train_max_response_length) / sp_size))
+infer_ppo_max_token_len=$(((max_prompt_length + train_max_response_length) / sp_size))
 offload=False
 gen_tp=1
 
@@ -76,7 +77,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     data.prompt_key=prompt \
     data.truncation='left' \
     data.max_prompt_length=${max_prompt_length} \
-    data.max_response_length=${max_response_length} \
+    data.max_response_length=${train_max_response_length} \
     data.gen_batch_size=${gen_prompt_bsz} \
     data.train_batch_size=${train_prompt_bsz} \
     actor_rollout_ref.rollout.n=${n_resp_per_prompt} \
@@ -129,7 +130,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.val_kwargs.top_k=${top_k} \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
-    actor_rollout_ref.rollout.val_kwargs.max_new_tokens=$((1024 * 10)) \
+    actor_rollout_ref.rollout.val_kwargs.max_new_tokens=$((val_max_response_length)) \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
