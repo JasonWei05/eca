@@ -27,7 +27,16 @@ def _get_attention_functions() -> tuple[Callable, Callable, Callable, Callable]:
     if is_torch_npu_available(check_device=False):
         from verl.utils.npu_flash_attn_utils import index_first_axis, pad_input, rearrange, unpad_input
     else:
-        from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+        try:
+            from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
+        except (ImportError, OSError) as e:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "flash_attn.bert_padding import failed (%s), falling back to pure-PyTorch padding utilities.",
+                e,
+            )
+            from verl.utils.npu_flash_attn_utils import index_first_axis, pad_input, rearrange, unpad_input
 
     _index_first_axis, _pad_input, _rearrange, _unpad_input = index_first_axis, pad_input, rearrange, unpad_input
 
