@@ -24,7 +24,7 @@ train_max_response_length=$((1024 * 10))
 val_max_response_length=$((1024 * 12))
 enable_overlong_buffer=True
 overlong_buffer_len=$((1024 * 2))
-overlong_penalty_factor=0.5
+overlong_penalty_factor=0.25
 
 loss_agg_mode="token-mean"
 
@@ -80,6 +80,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     data.max_response_length=${train_max_response_length} \
     data.gen_batch_size=${gen_prompt_bsz} \
     data.train_batch_size=${train_prompt_bsz} \
+    data.filter_overlong_prompts=True \
     actor_rollout_ref.rollout.n=${n_resp_per_prompt} \
     algorithm.adv_estimator=${adv_estimator} \
     algorithm.use_kl_in_reward=${use_kl_in_reward} \
@@ -101,8 +102,8 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
-    actor_rollout_ref.model.lora_rank=32 \
-    actor_rollout_ref.model.lora_alpha=16 \
+    actor_rollout_ref.model.lora_rank=16 \
+    actor_rollout_ref.model.lora_alpha=32 \
     actor_rollout_ref.model.target_modules=all-linear \
     actor_rollout_ref.rollout.load_format=safetensors \
     +actor_rollout_ref.model.override_config.attention_dropout=0. \
