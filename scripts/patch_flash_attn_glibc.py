@@ -17,30 +17,24 @@ import sys
 
 
 def find_flash_so():
-    """Auto-detect flash_attn .so path."""
+    """Auto-detect flash_attn .so path.
+
+    Avoids importing flash_attn because the import itself may fail on
+    GLIBC < 2.32 systems (the exact situation this script patches).
+    """
+    import glob
     import os
-    # Check common locations: site-packages root and flash_attn subdir
-    try:
-        import sysconfig
-        site_pkg = sysconfig.get_path("purelib")
-    except Exception:
-        site_pkg = None
+    import sysconfig
 
-    search_dirs = []
-    try:
-        import flash_attn
-        search_dirs.append(os.path.dirname(flash_attn.__file__))
-    except ImportError:
-        pass
-    if site_pkg:
-        search_dirs.append(site_pkg)
-
-    for d in search_dirs:
-        if not os.path.isdir(d):
+    # Search site-packages for the .so (both top-level and flash_attn subdir)
+    for key in ("platlib", "purelib"):
+        sp = sysconfig.get_path(key)
+        if not sp or not os.path.isdir(sp):
             continue
-        for f in os.listdir(d):
-            if f.startswith("flash_attn_2_cuda") and f.endswith(".so"):
-                return os.path.join(d, f)
+        for pattern in ("flash_attn_2_cuda*.so", "flash_attn/flash_attn_2_cuda*.so"):
+            matches = glob.glob(os.path.join(sp, pattern))
+            if matches:
+                return matches[0]
     return None
 
 
@@ -86,11 +80,24 @@ def patch_version_r(data, sections):
         print("  WARNING: .gnu.version_r section not found")
         return None
 
+    dynstr = sections.get(".dynstr")
+    if not dynstr:
+        print("  WARNING: .dynstr section not found")
+        return None
+
     GLIBC_232_HASH = 0x069691B2
     GLIBC_214_HASH = 0x06969194
 
-    # Find GLIBC_2.14 string in .dynstr for the name replacement
-    glibc214_off = data.find(b"GLIBC_2.14\x00")
+    # Find GLIBC_2.14 string in .dynstr for the name replacement.
+    # vna_name is an offset relative to the start of .dynstr, so we search
+    # within .dynstr and compute the section-relative offset.
+    dynstr_start = dynstr["offset"]
+    dynstr_end = dynstr_start + dynstr["size"]
+    glibc214_file_off = data.find(b"GLIBC_2.14\x00", dynstr_start, dynstr_end)
+    if glibc214_file_off >= 0:
+        glibc214_dynstr_off = glibc214_file_off - dynstr_start
+    else:
+        glibc214_dynstr_off = -1
 
     old_version_index = None
     offset = vr["offset"]
@@ -119,10 +126,10 @@ def patch_version_r(data, sections):
                 # Replace hash
                 struct.pack_into("<I", data, aux_offset, GLIBC_214_HASH)
 
-                # Replace name offset to point to GLIBC_2.14 string
-                if glibc214_off >= 0:
-                    struct.pack_into("<I", data, aux_offset + 8, glibc214_off)
-                    print(f"  Patched vernaux: hash -> GLIBC_2.14, name -> offset 0x{glibc214_off:x}")
+                # Replace name offset to point to GLIBC_2.14 string (.dynstr-relative)
+                if glibc214_dynstr_off >= 0:
+                    struct.pack_into("<I", data, aux_offset + 8, glibc214_dynstr_off)
+                    print(f"  Patched vernaux: hash -> GLIBC_2.14, name -> .dynstr offset 0x{glibc214_dynstr_off:x}")
                 else:
                     print("  WARNING: GLIBC_2.14 string not found in .dynstr, hash patched but name not updated")
 

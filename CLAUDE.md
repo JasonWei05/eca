@@ -90,6 +90,7 @@ torchrun --standalone --nnodes=1 --nproc-per-node=2 tests/workers/actor/test_spe
 - `tests/special_e2e/` - End-to-end tests
 - `tests/special_npu/` - NPU-specific tests
 - `tests/special_sanity/` - Quick sanity checks
+- `tests/special_standalone/` - Tests requiring dedicated environments
 - Tests ending with `_on_cpu.py` run on CPU only
 
 ### Entry Points & Examples
@@ -159,6 +160,9 @@ The `@register` decorator in `verl/single_controller/base/decorator.py` controls
 - `ALL_TO_ALL` - Each worker processes independently (parallel batches)
 - `DP_COMPUTE` - Distribute across data-parallel ranks (training)
 - `DP_COMPUTE_PROTO` - Like DP_COMPUTE for DataProto objects (rollouts)
+- `DP_COMPUTE_PROTO_WITH_FUNC` - DP_COMPUTE_PROTO with custom dispatch function
+- `DP_COMPUTE_METRIC` - Distribute and aggregate metrics across DP ranks
+- `DIRECT_ROLLOUT_METHOD` - Direct method call on rollout engine
 - `RANK_ZERO` - Only rank 0 executes (logging, collection)
 
 ### PPO Training Loop Flow
@@ -189,10 +193,10 @@ The `@register` decorator in `verl/single_controller/base/decorator.py` controls
 
 **Trainer** (`verl/trainer/ppo/`):
 - `ray_trainer.py` - Main training loop orchestrator
-- `core_algos.py` - All RL algorithms (300+ lines of advantage estimation)
-- Algorithm selection via config: `algorithm.adv_estimator=gae|grpo|reinforce_plus_plus|rloo`
+- `core_algos.py` - All RL algorithms (2200 lines, 13 advantage estimators)
+- Algorithm selection via config: `algorithm.adv_estimator=gae|grpo|grpo_vectorized|grpo_passk|reinforce_plus_plus|reinforce_plus_plus_baseline|rloo|rloo_vectorized|remax|opo|gpg|optimal_token_baseline|tir_optimal_token_baseline`
 
-**Experimental** (`verl/experimental/`): Features under development including `fully_async_policy`, `transfer_queue`, `one_step_off_policy`, `vla`, `agent_loop`, `reward_loop`, `dynamic_dataset`.
+**Experimental** (`verl/experimental/`): Features under development including `fully_async_policy`, `transfer_queue`, `one_step_off_policy`, `vla`, `agent_loop`, `reward_loop`, `dynamic_dataset`, `dataset`.
 
 ## Extension Points
 

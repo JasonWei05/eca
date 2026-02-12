@@ -46,7 +46,21 @@ else
 fi
 
 # Patch flash_attn .so to remove GLIBC_2.32 requirement
-FLASH_SO=$(python -c "import flash_attn, os; print(os.path.join(os.path.dirname(flash_attn.__file__), 'flash_attn_2_cuda.cpython-312-x86_64-linux-gnu.so'))" 2>/dev/null)
+# NOTE: We cannot `import flash_attn` to find the .so path because the import
+# itself fails on GLIBC < 2.32 systems (the very issue we are patching).
+# Instead, search site-packages directly.
+FLASH_SO=$(python -c "
+import sysconfig, glob, os
+for key in ('platlib', 'purelib'):
+    sp = sysconfig.get_path(key)
+    if not sp:
+        continue
+    for pattern in ('flash_attn_2_cuda*.so', 'flash_attn/flash_attn_2_cuda*.so'):
+        matches = glob.glob(os.path.join(sp, pattern))
+        if matches:
+            print(matches[0])
+            raise SystemExit(0)
+" 2>/dev/null)
 if [ -n "${FLASH_SO}" ] && [ -f "${FLASH_SO}" ]; then
     if readelf -V "${FLASH_SO}" 2>/dev/null | grep -q "GLIBC_2.32"; then
         echo "  Patching ${FLASH_SO} to remove GLIBC_2.32 dependency ..."
