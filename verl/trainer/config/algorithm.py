@@ -606,6 +606,7 @@ class AlgoConfig(BaseConfig):
     eca_linear: bool = False
     eca_softmax: bool = False
     eca_gamma: float = 1.0
+    scheduled_eca: Optional[list[float]] = None
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"
     kl_ctrl: KLControlConfig = field(default_factory=KLControlConfig)

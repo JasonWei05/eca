@@ -189,8 +189,8 @@ The `@register` decorator in `verl/single_controller/base/decorator.py` controls
 
 **Trainer** (`verl/trainer/ppo/`):
 - `ray_trainer.py` - Main training loop orchestrator
-- `core_algos.py` - All RL algorithms (300+ lines of advantage estimation)
-- Algorithm selection via config: `algorithm.adv_estimator=gae|grpo|reinforce_plus_plus|rloo`
+- `core_algos.py` - All RL algorithms and advantage estimation (~2200 lines). New algorithms are added via `@register_adv_est()` decorator.
+- Algorithm selection via config: `algorithm.adv_estimator=gae|grpo|reinforce_plus_plus|reinforce_plus_plus_baseline|remax|rloo|opo|grpo_passk|gpg|rloo_vectorized|grpo_vectorized|optimal_token_baseline` (or any custom string registered via `register_adv_est`)
 
 **Experimental** (`verl/experimental/`): Features under development including `fully_async_policy`, `transfer_queue`, `one_step_off_policy`, `vla`, `agent_loop`, `reward_loop`, `dynamic_dataset`.
 

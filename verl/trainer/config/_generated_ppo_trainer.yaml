@@ -573,6 +573,7 @@ algorithm:
   eca_linear: false
   eca_softmax: false
   eca_gamma: 1.0
+  scheduled_eca: null
   use_kl_in_reward: false
   kl_penalty: kl
   kl_ctrl:

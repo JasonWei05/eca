@@ -369,8 +369,13 @@ class RayDAPOTrainer(RayPPOTrainer):
                         batch.batch["advantages"] = batch.batch["advantages"] * T * grad_sq / sum_G
                         batch.batch.pop("grad_sq")
 
+                    # Scheduled ECA: defer per-step reweighting to dp_actor mini-batch loop
+                    scheduled_eca = self.config.algorithm.get("scheduled_eca", None)
+                    if scheduled_eca is not None and "grad_sq" in batch.batch:
+                        batch.meta_info["eca_gamma_schedule"] = list(scheduled_eca)
+
                     # Softmax advantage reweighting: redistribute per-token via softmax over gradient magnitude
-                    if self.config.algorithm.get("eca_softmax", False) and "grad_sq" in batch.batch:
+                    elif self.config.algorithm.get("eca_softmax", False) and "grad_sq" in batch.batch:
                         response_mask = batch.batch["response_mask"]
                         grad_sq = batch.batch["grad_sq"] * response_mask
                         eca_gamma = self.config.algorithm.get("eca_gamma", 1.0)

@@ -92,6 +92,9 @@ algorithm:
   # Gamma parameter for ECA advantage reweighting
   eca_gamma: 1.0
 
+  # Per-step ECA gamma schedule: list of gamma values, one per gradient step
+  scheduled_eca: null
+
   # Whether to enable in-reward KL penalty
   use_kl_in_reward: False
 

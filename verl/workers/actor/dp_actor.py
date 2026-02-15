@@ -676,6 +676,9 @@ class DataParallelPPOActor(BasePPOActor):
         # Include rollout_log_probs for computing rollout_corr metrics in bypass mode
         if "rollout_log_probs" in data.batch.keys():
             select_keys.append("rollout_log_probs")
+        # Include grad_sq for scheduled ECA per-step reweighting
+        if "grad_sq" in data.batch.keys():
+            select_keys.append("grad_sq")
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = []
@@ -685,6 +688,9 @@ class DataParallelPPOActor(BasePPOActor):
             non_tensor_select_keys.append("uid")
 
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
+
+        # Extract scheduled ECA gamma schedule before split (meta_info survives select/split)
+        eca_gamma_schedule = data.meta_info.get("eca_gamma_schedule", None)
 
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
@@ -696,8 +702,21 @@ class DataParallelPPOActor(BasePPOActor):
             "actor/pg_loss": 0.0,
             "actor/kl_loss": 0.0,
         }
+        global_step_idx = 0
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
+                # Scheduled ECA: per-step softmax reweighting of advantages
+                if eca_gamma_schedule is not None and "grad_sq" in mini_batch.batch.keys():
+                    gamma = eca_gamma_schedule[global_step_idx]
+                    response_mask = mini_batch.batch["response_mask"]
+                    grad_sq = mini_batch.batch["grad_sq"] * response_mask
+                    T = response_mask.sum(dim=-1, keepdim=True)
+                    logits = gamma * grad_sq
+                    logits = logits.masked_fill(response_mask == 0, float("-inf"))
+                    weights = torch.softmax(logits, dim=-1)
+                    mini_batch.batch["advantages"] = mini_batch.batch["advantages"] * T * weights
+                global_step_idx += 1
+
                 if self.config.use_dynamic_bsz:
                     max_token_len = self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
                     micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
