@@ -618,6 +618,7 @@ class RayPPOTrainer:
         sample_scores = []
         sample_turns = []
         sample_uids = []
+        sample_response_lengths = []  # per-sample actual response token counts
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -685,6 +686,24 @@ class RayPPOTrainer:
             test_batch = test_batch.union(test_output_gen_batch)
             test_batch.meta_info["validate"] = True
 
+            # Compute per-sample response lengths from attention mask
+            try:
+                _resp_mask = compute_response_mask(test_batch)  # (batch, resp_len), 1=real token
+                _resp_lens = _resp_mask.sum(-1).cpu().float().tolist()
+                sample_response_lengths.extend(_resp_lens)
+            except Exception:
+                _batch_size = test_output_gen_batch.batch["responses"].shape[0]
+                sample_response_lengths.extend([float("nan")] * _batch_size)
+
+            # Entropy proxy from vLLM generation log probs: -mean(log_prob) over response tokens
+            # Enabled by setting actor_rollout_ref.rollout.val_kwargs.calculate_log_probs=True
+            if "rollout_log_probs" in test_output_gen_batch.batch.keys():
+                _log_probs = test_output_gen_batch.batch["rollout_log_probs"]  # (batch, resp_len)
+                _resp_mask_lp = compute_response_mask(test_batch).float()
+                _n_tokens = _resp_mask_lp.sum(-1).clamp(min=1)
+                _entropy = (-_log_probs * _resp_mask_lp).sum(-1) / _n_tokens  # (batch,)
+                reward_extra_infos_dict["entropy"].extend(_entropy.cpu().float().tolist())
+
             # Store original inputs
             input_ids = test_batch.batch["prompts"]
             # TODO: Can we keep special tokens except for padding tokens?
@@ -738,11 +757,16 @@ class RayPPOTrainer:
                 "sample_uids": sample_uids,
                 "sample_turns": sample_turns,
                 "reward_extra_infos_dict": reward_extra_infos_dict,
+                "sample_response_lengths": sample_response_lengths,
             }
         data_sources = np.concatenate(data_source_lst, axis=0)
-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
+        return self._val_metrics_update(
+            data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths
+        )
 
-    def _val_metrics_update(self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns):
+    def _val_metrics_update(
+        self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths=None
+    ):
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
@@ -752,8 +776,32 @@ class RayPPOTrainer:
             metric2val = var2metric2val[core_var]
             n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
             for metric_name, metric_val in metric2val.items():
-                if metric_name == f"mean@{n_max}" or metric_name == "pass@32":
+                if metric_name in (f"mean@{n_max}", f"std@{n_max}", "pass@32"):
                     metric_dict[f"val/{data_source}/{core_var}/{metric_name}"] = metric_val
+
+            # Entropy: log mean@N if entropy was collected (val_kwargs.calculate_log_probs=True)
+            if "entropy" in var2metric2val:
+                entropy_mean = var2metric2val["entropy"].get(f"mean@{n_max}")
+                if entropy_mean is not None:
+                    metric_dict[f"val/{data_source}/entropy/mean@{n_max}"] = entropy_mean
+
+        # Per-dataset response length stats
+        if sample_response_lengths and len(sample_response_lengths) == len(data_sources):
+            val_max_resp_len = self.config.actor_rollout_ref.rollout.val_kwargs.get("max_new_tokens", None)
+            ds2resp_lens: dict[str, list] = defaultdict(list)
+            for ds, rl in zip(data_sources, sample_response_lengths):
+                if not np.isnan(rl):
+                    ds2resp_lens[ds].append(rl)
+            for ds, resp_lens in ds2resp_lens.items():
+                rl_arr = np.array(resp_lens)
+                metric_dict[f"val/{ds}/response_length/mean"] = float(np.mean(rl_arr))
+                metric_dict[f"val/{ds}/response_length/max"] = float(np.max(rl_arr))
+                metric_dict[f"val/{ds}/response_length/min"] = float(np.min(rl_arr))
+                metric_dict[f"val/{ds}/response_length/std"] = float(np.std(rl_arr))
+                if val_max_resp_len is not None:
+                    metric_dict[f"val/{ds}/response_length/clip_ratio"] = float(
+                        np.mean(rl_arr >= val_max_resp_len)
+                    )
 
         return metric_dict
 
@@ -761,9 +809,21 @@ class RayPPOTrainer:
         if result_a is None and result_b is None:
             return {}
         if result_a is None:
-            result_a = {"data_sources": [], "sample_uids": [], "sample_turns": [], "reward_extra_infos_dict": {}}
+            result_a = {
+                "data_sources": [],
+                "sample_uids": [],
+                "sample_turns": [],
+                "reward_extra_infos_dict": {},
+                "sample_response_lengths": [],
+            }
         if result_b is None:
-            result_b = {"data_sources": [], "sample_uids": [], "sample_turns": [], "reward_extra_infos_dict": {}}
+            result_b = {
+                "data_sources": [],
+                "sample_uids": [],
+                "sample_turns": [],
+                "reward_extra_infos_dict": {},
+                "sample_response_lengths": [],
+            }
 
         if not result_a.get("data_sources") and not result_b.get("data_sources"):
             return {}
@@ -771,6 +831,9 @@ class RayPPOTrainer:
         data_sources = np.concatenate(result_a["data_sources"] + result_b["data_sources"], axis=0)
         sample_uids = result_a["sample_uids"] + result_b["sample_uids"]
         sample_turns = result_a["sample_turns"] + result_b["sample_turns"]
+        sample_response_lengths = result_a.get("sample_response_lengths", []) + result_b.get(
+            "sample_response_lengths", []
+        )
 
         reward_extra_infos_dict = {}
         all_keys = set(result_a["reward_extra_infos_dict"].keys()) | set(result_b["reward_extra_infos_dict"].keys())
@@ -779,7 +842,9 @@ class RayPPOTrainer:
             list_b = result_b["reward_extra_infos_dict"].get(key, [])
             reward_extra_infos_dict[key] = list_a + list_b
 
-        return self._val_metrics_update(data_sources, sample_uids, reward_extra_infos_dict, sample_turns)
+        return self._val_metrics_update(
+            data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths
+        )
 
     def init_workers(self):
         """Initialize distributed training workers using Ray backend.

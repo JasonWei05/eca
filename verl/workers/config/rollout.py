@@ -41,6 +41,7 @@ class SamplingConfig(BaseConfig):
     do_sample: bool = True
     n: int = 1
     max_new_tokens: Optional[int] = None
+    calculate_log_probs: bool = False
 
 
 @dataclass

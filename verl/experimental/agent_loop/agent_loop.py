@@ -440,6 +440,7 @@ class AgentLoopWorker:
             sampling_params["temperature"] = config.val_kwargs.temperature
             if config.val_kwargs.max_new_tokens is not None:
                 sampling_params["max_new_tokens"] = config.val_kwargs.max_new_tokens
+            sampling_params["logprobs"] = config.val_kwargs.calculate_log_probs
 
         # by default, we assume it's a single turn agent
         if "agent_name" not in batch.non_tensor_batch:
