@@ -7,7 +7,7 @@ ray stop --force
 ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-normal-512batchsz-16updates-lora'
+exp_name='DAPO-Qwen3-4B-Base-normal-256batchsze-4updates-lora'
 
 adv_estimator=grpo
 
@@ -38,22 +38,22 @@ vn_entropy_chunk_size=8192
 enable_filter_groups=False
 filter_groups_metric=acc
 max_num_gen_batches=1
-train_prompt_bsz=512
+train_prompt_bsz=256
 gen_prompt_bsz=$((train_prompt_bsz * 1))
 n_resp_per_prompt=16
-train_prompt_mini_bsz=32
+train_prompt_mini_bsz=64
 
 RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
-WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason.wei/eca"}
+WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason_wei/eca"}
 RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/dapo_eca/runtime_env.yaml"}
 NNODES=${NNODES:-1}
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
-MODEL_PATH=${MODEL_PATH:-"/home/tiger/jason.wei/Qwen3-4B-Base"}
+MODEL_PATH=${MODEL_PATH:-"/home/tiger/jason_wei/eca/Qwen3-4B-Base"}
 CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
 # Training: math__combined_54.4k (filtered/normalized from Reasoning360)
 TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/math__combined_54.4k_filtered.parquet"}
-# Validation: AIME24 (32x for avg@32) + AIME25 (32x for avg@32) + MATH500
-VAL_FILES="['${RAY_DATA_HOME}/data/math__aime2024_repeated_32x_960.parquet','${RAY_DATA_HOME}/data/math__aime2025_repeated_32x_960.parquet','${RAY_DATA_HOME}/data/math__math_500.parquet']"
+# Validation: AIME24 (32x=960) + AIME25 (32x=960) + AIME26 (32x=960) + MATH500 (2x=1000) + OlympiadBench (2x~1000) + MinervaMAth (4x~1000)
+VAL_FILES="['${RAY_DATA_HOME}/data/math__aime2024_repeated_32x_960.parquet','${RAY_DATA_HOME}/data/math__aime2025_repeated_32x_960.parquet','${RAY_DATA_HOME}/data/math__aime2026_repeated_32x_960.parquet','${RAY_DATA_HOME}/data/math__math_500_repeated_2x_1000.parquet','${RAY_DATA_HOME}/data/math__olympiadbench_repeated_2x.parquet','${RAY_DATA_HOME}/data/math__minervamath_repeated_4x.parquet']"
 
 # Algorithm
 temperature=1.0
@@ -111,7 +111,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     +actor_rollout_ref.model.override_config.resid_pdrop=0. \
     +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.optim.lr=1e-5 \
+    actor_rollout_ref.actor.optim.lr=2.5e-5 \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
@@ -136,6 +136,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.rollout.val_kwargs.max_new_tokens=$((val_max_response_length)) \
+    actor_rollout_ref.rollout.val_kwargs.calculate_log_probs=True \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
@@ -153,7 +154,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes="${NNODES}" \
     trainer.val_before_train=True \
-    trainer.test_freq=10 \
+    trainer.test_freq=5 \
     trainer.save_freq=400 \
     trainer.total_epochs=40 \
     trainer.total_training_steps=800 \
@@ -169,9 +170,8 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.actor.use_torch_compile=False \
     actor_rollout_ref.ref.use_torch_compile=False \
     algorithm.eca_linear=False \
-    algorithm.eca_softmax=True \
+    algorithm.eca_softmax=False \
     algorithm.eca_gamma=1.0 \
-    algorithm.scheduled_eca='[-1.0,-1.0,-1.0,-1.0,-0.33,-0.33,-0.33,-0.33,0.33,0.33,0.33,0.33,1.0,1.0,1.0,1.0]' \
     actor_rollout_ref.actor.calculate_sum_pi_squared=True \
     actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.ref.entropy_checkpointing=True \
@@ -179,4 +179,4 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.ref.fsdp_config.forward_prefetch=True
 
 # Removed
-                      
+    # algorithm.scheduled_eca='[-1.0,-1.0,-1.0,-1.0,-0.33,-0.33,-0.33,-0.33,0.33,0.33,0.33,0.33,1.0,1.0,1.0,1.0]' \

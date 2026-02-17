@@ -27,7 +27,14 @@ AIME2024_8X_FILE="${DATA_DIR}/math__aime2024_repeated_8x_240.parquet"
 AIME2024_32X_FILE="${DATA_DIR}/math__aime2024_repeated_32x_960.parquet"
 AIME2025_FILE="${DATA_DIR}/math__aime2025_30.parquet"
 AIME2025_32X_FILE="${DATA_DIR}/math__aime2025_repeated_32x_960.parquet"
+AIME2026_FILE="${DATA_DIR}/math__aime2026_30.parquet"
+AIME2026_32X_FILE="${DATA_DIR}/math__aime2026_repeated_32x_960.parquet"
 MATH500_FILE="${DATA_DIR}/math__math_500.parquet"
+MATH500_2X_FILE="${DATA_DIR}/math__math_500_repeated_2x_1000.parquet"
+OLYMPIADBENCH_FILE="${DATA_DIR}/math__olympiadbench.parquet"
+OLYMPIADBENCH_2X_FILE="${DATA_DIR}/math__olympiadbench_repeated_2x.parquet"
+MINERVAMATH_FILE="${DATA_DIR}/math__minervamath.parquet"
+MINERVAMATH_4X_FILE="${DATA_DIR}/math__minervamath_repeated_4x.parquet"
 
 echo "=== Dataset Preparation ==="
 echo "Data directory: ${DATA_DIR}"
@@ -65,7 +72,7 @@ fi
 # Step 3b: Convert AIME 2025 from HuggingFace
 if [[ ! -f "${AIME2025_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
   echo "Converting AIME 2025 from MathArena/aime_2025..."
-  python3 "${SCRIPT_DIR}/convert_aime2025.py" --output_path "${AIME2025_FILE}"
+  python3 "${SCRIPT_DIR}/convert_aime2025.py" --dataset MathArena/aime_2025 --year 2025 --output_path "${AIME2025_FILE}"
 else
   echo "AIME 2025 already exists: ${AIME2025_FILE}"
 fi
@@ -79,6 +86,74 @@ if [[ ! -f "${AIME2025_32X_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
     --repeat_times 32
 else
   echo "AIME 2025 32x already exists: ${AIME2025_32X_FILE}"
+fi
+
+# Step 3d: Convert AIME 2026 from HuggingFace
+if [[ ! -f "${AIME2026_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Converting AIME 2026 from MathArena/aime_2026..."
+  python3 "${SCRIPT_DIR}/convert_aime2025.py" --dataset MathArena/aime_2026 --year 2026 --output_path "${AIME2026_FILE}"
+else
+  echo "AIME 2026 already exists: ${AIME2026_FILE}"
+fi
+
+# Step 3e: Create AIME 2026 32x (32x duplication for avg@32)
+if [[ ! -f "${AIME2026_32X_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Creating AIME 2026 32x dataset (for avg@32 scoring)..."
+  python3 "${SCRIPT_DIR}/duplicate_aime.py" \
+    --input_path "${AIME2026_FILE}" \
+    --save_path "${AIME2026_32X_FILE}" \
+    --repeat_times 32
+else
+  echo "AIME 2026 32x already exists: ${AIME2026_32X_FILE}"
+fi
+
+# Step 3f: Create MATH500 2x (500 * 2 = 1000)
+if [[ ! -f "${MATH500_2X_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Creating MATH500 2x dataset (~1000 instances)..."
+  python3 "${SCRIPT_DIR}/duplicate_aime.py" \
+    --input_path "${MATH500_FILE}" \
+    --save_path "${MATH500_2X_FILE}" \
+    --repeat_times 2
+else
+  echo "MATH500 2x already exists: ${MATH500_2X_FILE}"
+fi
+
+# Step 3g: Convert OlympiadBench from HuggingFace
+if [[ ! -f "${OLYMPIADBENCH_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Converting OlympiadBench from math-ai/OlympiadBench..."
+  python3 "${SCRIPT_DIR}/convert_olympiadbench.py" --output_path "${OLYMPIADBENCH_FILE}"
+else
+  echo "OlympiadBench already exists: ${OLYMPIADBENCH_FILE}"
+fi
+
+# Step 3h: Create OlympiadBench 2x (~1000 instances)
+if [[ ! -f "${OLYMPIADBENCH_2X_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Creating OlympiadBench 2x dataset (~1000 instances)..."
+  python3 "${SCRIPT_DIR}/duplicate_aime.py" \
+    --input_path "${OLYMPIADBENCH_FILE}" \
+    --save_path "${OLYMPIADBENCH_2X_FILE}" \
+    --repeat_times 2
+else
+  echo "OlympiadBench 2x already exists: ${OLYMPIADBENCH_2X_FILE}"
+fi
+
+# Step 3i: Convert MinervaMAth from HuggingFace
+if [[ ! -f "${MINERVAMATH_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Converting MinervaMAth from math-ai/minervamath..."
+  python3 "${SCRIPT_DIR}/convert_minervamath.py" --output_path "${MINERVAMATH_FILE}"
+else
+  echo "MinervaMAth already exists: ${MINERVAMATH_FILE}"
+fi
+
+# Step 3j: Create MinervaMAth 4x (~1000 instances)
+if [[ ! -f "${MINERVAMATH_4X_FILE}" || "${OVERWRITE}" -eq 1 ]]; then
+  echo "Creating MinervaMAth 4x dataset (~1000 instances)..."
+  python3 "${SCRIPT_DIR}/duplicate_aime.py" \
+    --input_path "${MINERVAMATH_FILE}" \
+    --save_path "${MINERVAMATH_4X_FILE}" \
+    --repeat_times 4
+else
+  echo "MinervaMAth 4x already exists: ${MINERVAMATH_4X_FILE}"
 fi
 
 # Step 4: Filter and normalize training dataset
@@ -136,7 +211,13 @@ updates = [
     ('${AIME2024_8X_FILE}', 'aime2024'),
     ('${AIME2024_32X_FILE}', 'aime2024'),
     ('${AIME2025_32X_FILE}', 'aime2025'),
+    ('${AIME2026_32X_FILE}', 'aime2026'),
     ('${MATH500_FILE}', 'math500'),
+    ('${MATH500_2X_FILE}', 'math500'),
+    ('${OLYMPIADBENCH_FILE}', 'olympiadbench'),
+    ('${OLYMPIADBENCH_2X_FILE}', 'olympiadbench'),
+    ('${MINERVAMATH_FILE}', 'minervamath'),
+    ('${MINERVAMATH_4X_FILE}', 'minervamath'),
 ]
 for path, ds in updates:
     if not os.path.exists(path):
@@ -153,8 +234,11 @@ echo "=== Summary ==="
 echo "Training file:     ${TRAIN_FILE}"
 echo "AIME 2024 32x:     ${AIME2024_32X_FILE}"
 echo "AIME 2025 32x:     ${AIME2025_32X_FILE}"
-echo "MATH500 file:      ${MATH500_FILE}"
+echo "AIME 2026 32x:     ${AIME2026_32X_FILE}"
+echo "MATH500 2x:        ${MATH500_2X_FILE}"
+echo "OlympiadBench 2x:  ${OLYMPIADBENCH_2X_FILE}"
+echo "MinervaMAth 4x:    ${MINERVAMATH_4X_FILE}"
 echo ""
 echo "Update your training script with:"
 echo "  TRAIN_FILE=\"${TRAIN_FILE}\""
-echo "  data.val_files=\"['${AIME2024_32X_FILE}','${AIME2025_32X_FILE}','${MATH500_FILE}']\""
+echo "  data.val_files=\"['${AIME2024_32X_FILE}','${AIME2025_32X_FILE}','${AIME2026_32X_FILE}','${MATH500_2X_FILE}','${OLYMPIADBENCH_2X_FILE}','${MINERVAMATH_4X_FILE}']\""

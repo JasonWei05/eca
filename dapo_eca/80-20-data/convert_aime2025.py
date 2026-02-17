@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert MathArena/aime_2025 to verl format matching AIME 2024."""
+"""Convert MathArena AIME datasets to verl format."""
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -8,27 +8,31 @@ import pandas as pd
 from datasets import load_dataset
 
 
-def convert_aime2025(output_path: str) -> None:
-    """Download and convert AIME 2025 dataset to verl format.
+def convert_aime(dataset_name: str, year: int, output_path: str) -> None:
+    """Download and convert a MathArena AIME dataset to verl format.
 
     Args:
+        dataset_name: HuggingFace dataset name (e.g., MathArena/aime_2025)
+        year: Year for extra_info and data_source label
         output_path: Path to save the converted parquet file
     """
-    print("Loading MathArena/aime_2025 from HuggingFace...")
-    ds = load_dataset("MathArena/aime_2025", split="train")
+    print(f"Loading {dataset_name} from HuggingFace...")
+    ds = load_dataset(dataset_name, split="train")
 
     print(f"Loaded {len(ds)} problems")
 
+    data_source = f"aime{year}"
+
     # Convert to the verl format matching AIME 2024
     records = []
-    for item in ds:
+    for idx, item in enumerate(ds):
         # Format the problem with instruction to output boxed answer
         problem_text = item["problem"]
         if not problem_text.endswith("Please output the final answer within \\boxed{}."):
             problem_text += " Please output the final answer within \\boxed{}."
 
         record = {
-            "data_source": "aime2025",  # Starts with "aime" so routes to math_dapo scorer
+            "data_source": data_source,  # Starts with "aime" so routes to math_verify scorer
             "prompt": [
                 {
                     "content": problem_text,
@@ -40,9 +44,9 @@ def convert_aime2025(output_path: str) -> None:
                 "style": "rule"
             },
             "extra_info": {
-                "problem_idx": item["problem_idx"],
-                "problem_type": item["problem_type"],
-                "year": 2025,
+                "problem_idx": item.get("problem_idx", idx),
+                "problem_type": item.get("problem_type", "unknown"),
+                "year": year,
                 "split": "test"
             }
         }
@@ -73,21 +77,32 @@ def convert_aime2025(output_path: str) -> None:
 
 
 def main():
-    parser = ArgumentParser(description="Convert AIME 2025 dataset to verl format")
+    parser = ArgumentParser(description="Convert MathArena AIME dataset to verl format")
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="MathArena/aime_2025",
+        help="HuggingFace dataset name (default: MathArena/aime_2025)"
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=2025,
+        help="AIME year (default: 2025)"
+    )
     parser.add_argument(
         "--output_path",
         type=str,
         default=None,
-        help="Path to save converted parquet (default: $HOME/verl/data/math__aime2025_30.parquet)"
+        help="Path to save converted parquet (default: $HOME/verl/data/math__aime{year}_{n}.parquet)"
     )
     args = parser.parse_args()
 
     if args.output_path is None:
-        from pathlib import Path
         home = Path.home()
-        args.output_path = str(home / "verl" / "data" / "math__aime2025_30.parquet")
+        args.output_path = str(home / "verl" / "data" / f"math__aime{args.year}_30.parquet")
 
-    convert_aime2025(args.output_path)
+    convert_aime(args.dataset, args.year, args.output_path)
 
 
 if __name__ == "__main__":
