@@ -7,7 +7,7 @@ ray stop --force
 ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-schedule-512batchsz-16updates-lora-16'
+exp_name='DAPO-Qwen3-4B-Base-normal-512batchsz-16updates-lora'
 
 adv_estimator=grpo
 
@@ -44,11 +44,11 @@ n_resp_per_prompt=16
 train_prompt_mini_bsz=32
 
 RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
-WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason_wei/eca"}
+WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason.wei/eca"}
 RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/dapo_eca/runtime_env.yaml"}
 NNODES=${NNODES:-1}
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
-MODEL_PATH=${MODEL_PATH:-"/home/tiger/jason_wei/eca/Qwen3-4B-Base"}
+MODEL_PATH=${MODEL_PATH:-"/home/tiger/jason.wei/Qwen3-4B-Base"}
 CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
 # Training: math__combined_54.4k (filtered/normalized from Reasoning360)
 TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/math__combined_54.4k_filtered.parquet"}
@@ -169,7 +169,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.actor.use_torch_compile=False \
     actor_rollout_ref.ref.use_torch_compile=False \
     algorithm.eca_linear=False \
-    algorithm.eca_softmax=False \
+    algorithm.eca_softmax=True \
     algorithm.eca_gamma=1.0 \
     algorithm.scheduled_eca='[-1.0,-1.0,-1.0,-1.0,-0.33,-0.33,-0.33,-0.33,0.33,0.33,0.33,0.33,1.0,1.0,1.0,1.0]' \
     actor_rollout_ref.actor.calculate_sum_pi_squared=True \
