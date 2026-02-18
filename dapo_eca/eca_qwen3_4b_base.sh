@@ -49,7 +49,7 @@ RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/dapo_eca/runtime_env.yaml"}
 NNODES=${NNODES:-1}
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
 MODEL_PATH=${MODEL_PATH:-"/home/tiger/jason_wei/eca/Qwen3-4B-Base"}
-CKPTS_DIR=${CKPTS_DIR:-"${RAY_DATA_HOME}/ckpts/${project_name}/${exp_name}"}
+CKPTS_DIR=${CKPTS_DIR:-"/data01/verl/ckpts/${project_name}/${exp_name}"}
 # Training: math__combined_54.4k (filtered/normalized from Reasoning360)
 TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/math__combined_54.4k_filtered.parquet"}
 # Validation: AIME24 (32x=960) + AIME25 (32x=960) + AIME26 (32x=960) + MATH500 (2x=1000) + OlympiadBench (2x~1000) + MinervaMAth (4x~1000)
@@ -155,7 +155,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     trainer.nnodes="${NNODES}" \
     trainer.val_before_train=True \
     trainer.test_freq=5 \
-    trainer.save_freq=400 \
+    trainer.save_freq=25 \
     trainer.total_epochs=40 \
     trainer.total_training_steps=800 \
     trainer.default_local_dir="${CKPTS_DIR}" \

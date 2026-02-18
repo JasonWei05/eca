@@ -109,9 +109,16 @@ class vLLMHttpServer:
 
         self.config: RolloutConfig = omega_conf_to_dataclass(config)
         self.model_config: HFModelConfig = omega_conf_to_dataclass(model_config, dataclass_type=HFModelConfig)
+        # Use the larger of training response_length and val max_new_tokens
+        # so that validation generation isn't silently clamped.
+        effective_response_length = self.config.response_length
+        if (self.config.val_kwargs is not None
+                and self.config.val_kwargs.max_new_tokens is not None):
+            effective_response_length = max(effective_response_length, self.config.val_kwargs.max_new_tokens)
+
         self.config.max_model_len = min(
             get_max_position_embeddings(self.model_config.hf_config),
-            self.config.prompt_length + self.config.response_length,
+            self.config.prompt_length + effective_response_length,
         )
         self.rollout_mode = rollout_mode
         self.workers = workers
