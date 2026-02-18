@@ -619,6 +619,7 @@ class RayPPOTrainer:
         sample_turns = []
         sample_uids = []
         sample_response_lengths = []  # per-sample actual response token counts
+        sample_response_clipped = []  # per-sample flag: 1 if response hit max length
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -689,11 +690,16 @@ class RayPPOTrainer:
             # Compute per-sample response lengths from attention mask
             try:
                 _resp_mask = compute_response_mask(test_batch)  # (batch, resp_len), 1=real token
-                _resp_lens = _resp_mask.sum(-1).cpu().float().tolist()
-                sample_response_lengths.extend(_resp_lens)
+                _resp_lens = _resp_mask.sum(-1).cpu().float()
+                # Clip ratio: response filled entire buffer (same logic as training)
+                _max_resp_len = test_output_gen_batch.batch["responses"].shape[-1]
+                _clipped = torch.eq(_resp_lens, float(_max_resp_len)).float().tolist()
+                sample_response_lengths.extend(_resp_lens.tolist())
+                sample_response_clipped.extend(_clipped)
             except Exception:
                 _batch_size = test_output_gen_batch.batch["responses"].shape[0]
                 sample_response_lengths.extend([float("nan")] * _batch_size)
+                sample_response_clipped.extend([float("nan")] * _batch_size)
 
             # Entropy proxy from vLLM generation log probs: -mean(log_prob) over response tokens
             # Enabled by setting actor_rollout_ref.rollout.val_kwargs.calculate_log_probs=True
@@ -758,14 +764,17 @@ class RayPPOTrainer:
                 "sample_turns": sample_turns,
                 "reward_extra_infos_dict": reward_extra_infos_dict,
                 "sample_response_lengths": sample_response_lengths,
+                "sample_response_clipped": sample_response_clipped,
             }
         data_sources = np.concatenate(data_source_lst, axis=0)
         return self._val_metrics_update(
-            data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths
+            data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths,
+            sample_response_clipped,
         )
 
     def _val_metrics_update(
-        self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths=None
+        self, data_sources, sample_uids, reward_extra_infos_dict, sample_turns,
+        sample_response_lengths=None, sample_response_clipped=None,
     ):
         data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
         metric_dict = {}
@@ -787,43 +796,42 @@ class RayPPOTrainer:
 
         # Per-dataset response length stats
         if sample_response_lengths and len(sample_response_lengths) == len(data_sources):
-            val_max_resp_len = self.config.actor_rollout_ref.rollout.val_kwargs.get("max_new_tokens", None)
             ds2resp_lens: dict[str, list] = defaultdict(list)
-            for ds, rl in zip(data_sources, sample_response_lengths):
+            ds2clipped: dict[str, list] = defaultdict(list)
+            for i, (ds, rl) in enumerate(zip(data_sources, sample_response_lengths)):
                 if not np.isnan(rl):
                     ds2resp_lens[ds].append(rl)
+                    if sample_response_clipped and i < len(sample_response_clipped):
+                        ds2clipped[ds].append(sample_response_clipped[i])
             for ds, resp_lens in ds2resp_lens.items():
                 rl_arr = np.array(resp_lens)
                 metric_dict[f"val/{ds}/response_length/mean"] = float(np.mean(rl_arr))
                 metric_dict[f"val/{ds}/response_length/max"] = float(np.max(rl_arr))
                 metric_dict[f"val/{ds}/response_length/min"] = float(np.min(rl_arr))
                 metric_dict[f"val/{ds}/response_length/std"] = float(np.std(rl_arr))
-                if val_max_resp_len is not None:
-                    metric_dict[f"val/{ds}/response_length/clip_ratio"] = float(
-                        np.mean(rl_arr >= val_max_resp_len)
-                    )
+                # Clip ratio: fraction of responses that filled the entire response buffer
+                # Uses per-sample flags computed in _validate (same as training logic)
+                if ds in ds2clipped and ds2clipped[ds]:
+                    clip_arr = np.array(ds2clipped[ds])
+                    metric_dict[f"val/{ds}/response_length/clip_ratio"] = float(np.nanmean(clip_arr))
 
         return metric_dict
 
     def _merge_validation_results(self, result_a, result_b):
         if result_a is None and result_b is None:
             return {}
+        _empty = {
+            "data_sources": [],
+            "sample_uids": [],
+            "sample_turns": [],
+            "reward_extra_infos_dict": {},
+            "sample_response_lengths": [],
+            "sample_response_clipped": [],
+        }
         if result_a is None:
-            result_a = {
-                "data_sources": [],
-                "sample_uids": [],
-                "sample_turns": [],
-                "reward_extra_infos_dict": {},
-                "sample_response_lengths": [],
-            }
+            result_a = _empty.copy()
         if result_b is None:
-            result_b = {
-                "data_sources": [],
-                "sample_uids": [],
-                "sample_turns": [],
-                "reward_extra_infos_dict": {},
-                "sample_response_lengths": [],
-            }
+            result_b = _empty.copy()
 
         if not result_a.get("data_sources") and not result_b.get("data_sources"):
             return {}
@@ -834,6 +842,9 @@ class RayPPOTrainer:
         sample_response_lengths = result_a.get("sample_response_lengths", []) + result_b.get(
             "sample_response_lengths", []
         )
+        sample_response_clipped = result_a.get("sample_response_clipped", []) + result_b.get(
+            "sample_response_clipped", []
+        )
 
         reward_extra_infos_dict = {}
         all_keys = set(result_a["reward_extra_infos_dict"].keys()) | set(result_b["reward_extra_infos_dict"].keys())
@@ -843,7 +854,8 @@ class RayPPOTrainer:
             reward_extra_infos_dict[key] = list_a + list_b
 
         return self._val_metrics_update(
-            data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths
+            data_sources, sample_uids, reward_extra_infos_dict, sample_turns, sample_response_lengths,
+            sample_response_clipped,
         )
 
     def init_workers(self):
