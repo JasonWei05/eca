@@ -7,7 +7,7 @@ ray stop --force
 ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-normal-256batchsze-4updates-lora'
+exp_name='DAPO-Qwen3-4B-Base-normal-128batchsz-2updates-lora-1e-5lr'
 
 adv_estimator=grpo
 
@@ -21,7 +21,7 @@ clip_ratio_high=0.28
 
 max_prompt_length=$((1024 * 2))
 train_max_response_length=$((1024 * 10))
-val_max_response_length=$((1024 * 12))
+val_max_response_length=$((1024 * 16))
 enable_overlong_buffer=True
 overlong_buffer_len=$((1024 * 2))
 overlong_penalty_factor=0.25
@@ -38,7 +38,7 @@ vn_entropy_chunk_size=8192
 enable_filter_groups=False
 filter_groups_metric=acc
 max_num_gen_batches=1
-train_prompt_bsz=256
+train_prompt_bsz=128
 gen_prompt_bsz=$((train_prompt_bsz * 1))
 n_resp_per_prompt=16
 train_prompt_mini_bsz=64
@@ -111,7 +111,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     +actor_rollout_ref.model.override_config.resid_pdrop=0. \
     +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.optim.lr=2.5e-5 \
+    actor_rollout_ref.actor.optim.lr=1e-5 \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
@@ -136,7 +136,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
     actor_rollout_ref.rollout.val_kwargs.n=1 \
     actor_rollout_ref.rollout.val_kwargs.max_new_tokens=$((val_max_response_length)) \
-    actor_rollout_ref.rollout.val_kwargs.calculate_log_probs=True \
+    +actor_rollout_ref.rollout.val_kwargs.calculate_log_probs=True \
     actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
