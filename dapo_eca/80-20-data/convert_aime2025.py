@@ -45,7 +45,7 @@ def convert_aime(dataset_name: str, year: int, output_path: str) -> None:
             },
             "extra_info": {
                 "problem_idx": item.get("problem_idx", idx),
-                "problem_type": item.get("problem_type", "unknown"),
+                "problem_type": ", ".join(item["problem_type"]) if isinstance(item.get("problem_type"), list) else str(item.get("problem_type", "unknown")),
                 "year": year,
                 "split": "test"
             }
