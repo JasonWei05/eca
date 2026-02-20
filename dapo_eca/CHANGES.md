@@ -83,7 +83,32 @@ Added three fields to the `algorithm` section (already existed in the Python
 
 - `eca_linear: False`
 - `eca_softmax: False`
-- `eca_gamma: 1.0`
+- `eca_softmax_gamma: 1.0`
+
+### 9. ECA On-Policy Mode (`algorithm.eca_on_policy`)
+
+Added a third ECA token-weighting mode based on the 100% on-policy regime of the
+adaptive formula from `eca_docs/IMPLEMENTATION_DETAILS.md`. Assumes ρ_k = 1 and
+λ_k = 0, giving the simplified weight:
+
+```
+w_t = 1 / (f_t + c)
+```
+
+where `f_t = 1 - Σπ²` (Fisher trace) and `c = Var(A_seq) / B` (noise floor:
+population variance of sequence-level advantages divided by number of sequences).
+Weights are normalized per-sequence to mean 1.
+
+**Files changed:**
+
+- **`verl/trainer/config/algorithm.py`** — Added `eca_on_policy: bool = False`
+  to `AlgoConfig`.
+- **`dapo_eca/dapo_ray_trainer.py`** — Added mutual exclusivity check (at most
+  one of `eca_linear`, `eca_softmax`, `eca_on_policy` can be True). Extended
+  `grad_sq` computation condition to include `eca_on_policy`. Added on-policy
+  reweighting block after the `eca_softmax` block.
+- **`dapo_eca/eca_qwen3_4b_base.sh`** — Added `algorithm.eca_on_policy=False`
+  config flag.
 
 ## Script Changes
 

@@ -605,7 +605,8 @@ class AlgoConfig(BaseConfig):
     norm_adv_by_std_in_grpo: bool = True
     eca_linear: bool = False
     eca_softmax: bool = False
-    eca_gamma: float = 1.0
+    eca_softmax_gamma: float = 1.0
+    eca_on_policy: bool = False
     scheduled_eca: Optional[list[float]] = None
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"

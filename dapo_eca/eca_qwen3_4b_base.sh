@@ -7,7 +7,7 @@ ray stop --force
 ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-normal-128batchsz-2updates-lora-1e-5lr'
+exp_name='DAPO-Qwen3-4B-Base-eca_on_policy-128batchsz-2updates-lora-1e-5lr'
 
 adv_estimator=grpo
 
@@ -171,7 +171,8 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.ref.use_torch_compile=False \
     algorithm.eca_linear=False \
     algorithm.eca_softmax=False \
-    algorithm.eca_gamma=1.0 \
+    algorithm.eca_softmax_gamma=1.0 \
+    algorithm.eca_on_policy=True \
     actor_rollout_ref.actor.calculate_sum_pi_squared=True \
     actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.ref.entropy_checkpointing=True \

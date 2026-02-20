@@ -572,7 +572,8 @@ algorithm:
   norm_adv_by_std_in_grpo: true
   eca_linear: false
   eca_softmax: false
-  eca_gamma: 1.0
+  eca_softmax_gamma: 1.0
+  eca_on_policy: false
   scheduled_eca: null
   use_kl_in_reward: false
   kl_penalty: kl

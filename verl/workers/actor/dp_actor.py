@@ -690,7 +690,7 @@ class DataParallelPPOActor(BasePPOActor):
         data = data.select(batch_keys=select_keys, non_tensor_batch_keys=non_tensor_select_keys)
 
         # Extract scheduled ECA gamma schedule before split (meta_info survives select/split)
-        eca_gamma_schedule = data.meta_info.get("eca_gamma_schedule", None)
+        eca_softmax_gamma_schedule = data.meta_info.get("eca_softmax_gamma_schedule", None)
 
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
@@ -706,8 +706,8 @@ class DataParallelPPOActor(BasePPOActor):
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
                 # Scheduled ECA: per-step softmax reweighting of advantages
-                if eca_gamma_schedule is not None and "grad_sq" in mini_batch.batch.keys():
-                    gamma = eca_gamma_schedule[global_step_idx]
+                if eca_softmax_gamma_schedule is not None and "grad_sq" in mini_batch.batch.keys():
+                    gamma = eca_softmax_gamma_schedule[global_step_idx]
                     response_mask = mini_batch.batch["response_mask"]
                     grad_sq = mini_batch.batch["grad_sq"] * response_mask
                     T = response_mask.sum(dim=-1, keepdim=True)

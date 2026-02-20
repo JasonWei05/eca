@@ -90,7 +90,10 @@ algorithm:
   eca_softmax: False
 
   # Gamma parameter for ECA advantage reweighting
-  eca_gamma: 1.0
+  eca_softmax_gamma: 1.0
+
+  # Whether to use on-policy ECA
+  eca_on_policy: False
 
   # Per-step ECA gamma schedule: list of gamma values, one per gradient step
   scheduled_eca: null

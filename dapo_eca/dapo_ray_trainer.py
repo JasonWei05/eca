@@ -66,6 +66,18 @@ class RayDAPOTrainer(RayPPOTrainer):
             entropy_agg = agg_loss(loss_mat=entropys, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
             old_log_prob_metrics = {"actor/entropy": entropy_agg.detach().item()}
             metrics.update(old_log_prob_metrics)
+            # Validate at most one ECA mode is enabled
+            eca_modes = sum([
+                self.config.algorithm.get("eca_linear", False),
+                self.config.algorithm.get("eca_softmax", False),
+                self.config.algorithm.get("eca_on_policy", False),
+            ])
+            if eca_modes > 1:
+                raise ValueError(
+                    "At most one ECA mode can be enabled. Got multiple of: "
+                    "eca_linear, eca_softmax, eca_on_policy"
+                )
+
             if "sum_pi_squared" in old_log_prob.batch.keys():
                 sum_pi_squared = old_log_prob.batch["sum_pi_squared"]
                 renyi2_entropy = -torch.log(sum_pi_squared.clamp(min=1e-10))
@@ -73,7 +85,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                     loss_mat=renyi2_entropy, loss_mask=response_masks, loss_agg_mode=loss_agg_mode
                 )
                 metrics["actor/renyi2_entropy"] = renyi2_entropy_agg.detach().item()
-                if self.config.algorithm.get("eca_linear", False) or self.config.algorithm.get("eca_softmax", False):
+                if self.config.algorithm.get("eca_linear", False) or self.config.algorithm.get("eca_softmax", False) or self.config.algorithm.get("eca_on_policy", False):
                     batch.batch["grad_sq"] = (1.0 - sum_pi_squared).clamp(min=0.0)
                 old_log_prob.batch.pop("sum_pi_squared")
             old_log_prob.batch.pop("entropys")
@@ -372,19 +384,46 @@ class RayDAPOTrainer(RayPPOTrainer):
                     # Scheduled ECA: defer per-step reweighting to dp_actor mini-batch loop
                     scheduled_eca = self.config.algorithm.get("scheduled_eca", None)
                     if scheduled_eca is not None and "grad_sq" in batch.batch:
-                        batch.meta_info["eca_gamma_schedule"] = list(scheduled_eca)
+                        batch.meta_info["eca_softmax_gamma_schedule"] = list(scheduled_eca)
 
                     # Softmax advantage reweighting: redistribute per-token via softmax over gradient magnitude
                     elif self.config.algorithm.get("eca_softmax", False) and "grad_sq" in batch.batch:
                         response_mask = batch.batch["response_mask"]
                         grad_sq = batch.batch["grad_sq"] * response_mask
-                        eca_gamma = self.config.algorithm.get("eca_gamma", 1.0)
+                        eca_softmax_gamma = self.config.algorithm.get("eca_softmax_gamma", 1.0)
                         T = response_mask.sum(dim=-1, keepdim=True)
                         # Masked softmax: set masked positions to -inf before softmax
-                        logits = eca_gamma * grad_sq
+                        logits = eca_softmax_gamma * grad_sq
                         logits = logits.masked_fill(response_mask == 0, float("-inf"))
                         weights = torch.softmax(logits, dim=-1)
                         batch.batch["advantages"] = batch.batch["advantages"] * T * weights
+                        batch.batch.pop("grad_sq")
+
+                    # On-policy ECA: w_t = 1/(f_t + c), c = Var(A_seq) / B
+                    elif self.config.algorithm.get("eca_on_policy", False) and "grad_sq" in batch.batch:
+                        response_mask = batch.batch["response_mask"]
+                        grad_sq = batch.batch["grad_sq"] * response_mask  # f_t
+                        advantages = batch.batch["advantages"]
+
+                        # Compute sequence-level advantages (same value for all tokens in GRPO)
+                        seq_lengths = response_mask.sum(dim=-1).clamp(min=1)  # [batch]
+                        seq_adv = (advantages * response_mask).sum(dim=-1) / seq_lengths  # [batch]
+
+                        # Noise floor: c = Var(A_seq) / B
+                        B = seq_adv.shape[0]
+                        c = seq_adv.var(unbiased=False) / B
+                        c = c.clamp(min=1e-8)
+
+                        # Per-token weight: w = 1/(f_t + c)
+                        w_t = 1.0 / (grad_sq + c)
+
+                        # Normalize per-sequence to mean 1
+                        T = response_mask.sum(dim=-1, keepdim=True).clamp(min=1)
+                        w_mean = (w_t * response_mask).sum(dim=-1, keepdim=True) / T
+                        w_t = w_t / w_mean.clamp(min=1e-8)
+                        w_t = w_t * response_mask
+
+                        batch.batch["advantages"] = advantages * w_t
                         batch.batch.pop("grad_sq")
 
                     # update critic
