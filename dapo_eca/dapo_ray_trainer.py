@@ -429,7 +429,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                         # Diagnostics
                         f_valid = grad_sq[response_mask.bool()]
                         w_valid = w_t[response_mask.bool()]
-                        log.info(
+                        print(
                             f"[ECA on-policy] B_prompts={B_prompts}, c={c.item():.6f}, "
                             f"Var(A_seq)={seq_adv.var(unbiased=False).item():.4f}, "
                             f"f_t: min={f_valid.min().item():.4f}, median={f_valid.median().item():.4f}, "
