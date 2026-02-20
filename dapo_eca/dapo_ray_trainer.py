@@ -399,7 +399,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                         batch.batch["advantages"] = batch.batch["advantages"] * T * weights
                         batch.batch.pop("grad_sq")
 
-                    # On-policy ECA: w_t = 1/(f_t + c), c = Var(A_seq) / B
+                    # On-policy ECA: w_t = 1/(f_t + c), c = Var(A_seq) / B_prompts
                     elif self.config.algorithm.get("eca_on_policy", False) and "grad_sq" in batch.batch:
                         response_mask = batch.batch["response_mask"]
                         grad_sq = batch.batch["grad_sq"] * response_mask  # f_t
@@ -409,9 +409,12 @@ class RayDAPOTrainer(RayPPOTrainer):
                         seq_lengths = response_mask.sum(dim=-1).clamp(min=1)  # [batch]
                         seq_adv = (advantages * response_mask).sum(dim=-1) / seq_lengths  # [batch]
 
-                        # Noise floor: c = Var(A_seq) / B
-                        B = seq_adv.shape[0]
-                        c = seq_adv.var(unbiased=False) / B
+                        # Noise floor: c = Var(A_seq) / B_prompts
+                        # Use number of unique prompts (not total sequences) since responses
+                        # within a prompt group are correlated
+                        num_repeat = self.config.actor_rollout_ref.rollout.n
+                        B_prompts = seq_adv.shape[0] // num_repeat
+                        c = seq_adv.var(unbiased=False) / B_prompts
                         c = c.clamp(min=1e-8)
 
                         # Per-token weight: w = 1/(f_t + c)
@@ -422,6 +425,18 @@ class RayDAPOTrainer(RayPPOTrainer):
                         w_mean = (w_t * response_mask).sum(dim=-1, keepdim=True) / T
                         w_t = w_t / w_mean.clamp(min=1e-8)
                         w_t = w_t * response_mask
+
+                        # Diagnostics
+                        f_valid = grad_sq[response_mask.bool()]
+                        w_valid = w_t[response_mask.bool()]
+                        log.info(
+                            f"[ECA on-policy] B_prompts={B_prompts}, c={c.item():.6f}, "
+                            f"Var(A_seq)={seq_adv.var(unbiased=False).item():.4f}, "
+                            f"f_t: min={f_valid.min().item():.4f}, median={f_valid.median().item():.4f}, "
+                            f"max={f_valid.max().item():.4f}, "
+                            f"w_t: min={w_valid.min().item():.4f}, max={w_valid.max().item():.4f}, "
+                            f"std={w_valid.std().item():.4f}"
+                        )
 
                         batch.batch["advantages"] = advantages * w_t
                         batch.batch.pop("grad_sq")
