@@ -173,6 +173,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     algorithm.eca_softmax=False \
     algorithm.eca_softmax_gamma=1.0 \
     algorithm.eca_on_policy=True \
+    algorithm.eca_on_policy_c_min=1e-8 \
     actor_rollout_ref.actor.calculate_sum_pi_squared=True \
     actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.ref.entropy_checkpointing=True \

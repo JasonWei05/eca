@@ -607,6 +607,7 @@ class AlgoConfig(BaseConfig):
     eca_softmax: bool = False
     eca_softmax_gamma: float = 1.0
     eca_on_policy: bool = False
+    eca_on_policy_c_min: float = 1e-8
     scheduled_eca: Optional[list[float]] = None
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"

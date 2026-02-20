@@ -574,6 +574,7 @@ algorithm:
   eca_softmax: false
   eca_softmax_gamma: 1.0
   eca_on_policy: false
+  eca_on_policy_c_min: 1e-8
   scheduled_eca: null
   use_kl_in_reward: false
   kl_penalty: kl

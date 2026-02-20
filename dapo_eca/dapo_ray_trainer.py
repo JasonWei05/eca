@@ -415,7 +415,8 @@ class RayDAPOTrainer(RayPPOTrainer):
                         num_repeat = self.config.actor_rollout_ref.rollout.n
                         B_prompts = seq_adv.shape[0] // num_repeat
                         c = seq_adv.var(unbiased=False) / B_prompts
-                        c = c.clamp(min=1e-8)
+                        c_min = self.config.algorithm.get("eca_on_policy_c_min", 1e-8)
+                        c = c.clamp(min=c_min)
 
                         # Per-token weight: w = 1/(f_t + c)
                         w_t = 1.0 / (grad_sq + c)
