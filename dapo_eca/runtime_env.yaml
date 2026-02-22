@@ -5,3 +5,7 @@ env_vars:
   VLLM_USE_V1: "1"
   LD_PRELOAD: "/home/tiger/miniconda3/envs/eca/lib/glibc_compat.so"
   PATH: "/usr/local/cuda-12.2/bin:/home/tiger/miniconda3/envs/eca/bin:/usr/local/bin:/usr/bin:/bin"
+  NCCL_P2P_DISABLE: "1"
+  NCCL_IB_DISABLE: "1"
+  NCCL_SOCKET_IFNAME: "eth0"
+  NCCL_DEBUG: "WARN"

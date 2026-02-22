@@ -3,11 +3,11 @@
 export LD_PRELOAD=/home/tiger/miniconda3/envs/eca/lib/glibc_compat.so
 export RAY_TMPDIR=/data02/ray_tmp
 
-ray stop --force
-ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
+# ray stop --force
+# ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-eca_on_policy-128batchsz-2updates-lora-1e-5lr'
+exp_name='DAPO-Qwen3-4B-Base-normal-512batchsz-16updates-lora-1e-5lr-20k-limit'
 
 adv_estimator=grpo
 
@@ -20,11 +20,11 @@ clip_ratio_low=0.2
 clip_ratio_high=0.28
 
 max_prompt_length=$((1024 * 2))
-train_max_response_length=$((1024 * 10))
-val_max_response_length=$((1024 * 16))
+train_max_response_length=$((1024 * 20))
+val_max_response_length=$((1024 * 20))
 enable_overlong_buffer=True
-overlong_buffer_len=$((1024 * 2))
-overlong_penalty_factor=0.25
+overlong_buffer_len=$((1024 * 4))
+overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
 
@@ -35,20 +35,20 @@ pca_dim=64
 vn_entropy_top_k=32
 vn_entropy_chunk_size=8192
 
-enable_filter_groups=False
+enable_filter_groups=True
 filter_groups_metric=acc
-max_num_gen_batches=1
-train_prompt_bsz=128
-gen_prompt_bsz=$((train_prompt_bsz * 1))
+max_num_gen_batches=10
+train_prompt_bsz=512
+gen_prompt_bsz=$((train_prompt_bsz * 2))
 n_resp_per_prompt=16
-train_prompt_mini_bsz=64
+train_prompt_mini_bsz=32
 
 RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
-WORKING_DIR=${WORKING_DIR:-"/data01/Qwen3-4B-Base"}
+WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason_wei/eca"}
 RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/dapo_eca/runtime_env.yaml"}
-NNODES=${NNODES:-1}
+NNODES=${NNODES:-2}
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
-MODEL_PATH=${MODEL_PATH:-"/home/tiger/jason_wei/eca/Qwen3-4B-Base"}
+MODEL_PATH=${MODEL_PATH:-"/data01/Qwen3-4B-Base"}
 CKPTS_DIR=${CKPTS_DIR:-"/data01/verl/ckpts/${project_name}/${exp_name}"}
 # Training: math__combined_54.4k (filtered/normalized from Reasoning360)
 TRAIN_FILE=${TRAIN_FILE:-"${RAY_DATA_HOME}/data/math__combined_54.4k_filtered.parquet"}
@@ -61,7 +61,7 @@ top_p=1.0
 top_k=-1 # 0 for HF rollout, -1 for vLLM rollout
 
 # Performance Related Parameter
-sp_size=2
+sp_size=4
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + train_max_response_length) / sp_size))
 infer_ppo_max_token_len=$(((max_prompt_length + train_max_response_length) / sp_size))
@@ -111,7 +111,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     +actor_rollout_ref.model.override_config.resid_pdrop=0. \
     +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.optim.lr=2e-5 \
+    actor_rollout_ref.actor.optim.lr=1e-5 \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
@@ -141,7 +141,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.ref.fsdp_config.param_offload=${offload} \
     actor_rollout_ref.ref.ulysses_sequence_parallel_size=${sp_size} \
     actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=8 \
-    actor_rollout_ref.actor.fsdp_config.fsdp_size=-1 \
+    actor_rollout_ref.actor.fsdp_config.fsdp_size=8 \
     reward_model.reward_manager=dapo \
     reward_model.launch_reward_fn_async=True \
     reward_model.overlong_buffer.enable=${enable_overlong_buffer} \
@@ -154,7 +154,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes="${NNODES}" \
     trainer.val_before_train=True \
-    trainer.test_freq=5 \
+    trainer.test_freq=2 \
     trainer.save_freq=25 \
     trainer.total_epochs=40 \
     trainer.total_training_steps=800 \
@@ -172,7 +172,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     algorithm.eca_linear=False \
     algorithm.eca_softmax=False \
     algorithm.eca_softmax_gamma=1.0 \
-    algorithm.eca_on_policy=True \
+    algorithm.eca_on_policy=False \
     algorithm.eca_on_policy_c_min=1e-8 \
     actor_rollout_ref.actor.calculate_sum_pi_squared=True \
     actor_rollout_ref.actor.entropy_checkpointing=True \
