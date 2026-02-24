@@ -692,6 +692,10 @@ class DataParallelPPOActor(BasePPOActor):
         # Extract scheduled ECA gamma schedule before split (meta_info survives select/split)
         eca_softmax_gamma_schedule = data.meta_info.get("eca_softmax_gamma_schedule", None)
 
+        # Extract on-policy ECA softmax config (recompute grad_sq from current policy each micro-batch)
+        eca_softmax_on_policy_grad_sq = data.meta_info.get("eca_softmax_on_policy_grad_sq", False)
+        eca_softmax_gamma = data.meta_info.get("eca_softmax_gamma", 0.0)
+
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
@@ -752,6 +756,16 @@ class DataParallelPPOActor(BasePPOActor):
                     )
                     log_prob = outputs["log_probs"]
                     entropy = outputs["entropys"] if calculate_entropy else None
+
+                    # On-policy ECA softmax: reweight advantages using fresh grad_sq from current policy
+                    if eca_softmax_on_policy_grad_sq and "sum_pi_squared" in outputs:
+                        sum_pi_squared = outputs["sum_pi_squared"].detach()
+                        grad_sq_fresh = (1.0 - sum_pi_squared).clamp(min=0.0)
+                        T = response_mask.sum(dim=-1, keepdim=True)
+                        eca_logits = eca_softmax_gamma * grad_sq_fresh * response_mask
+                        eca_logits = eca_logits.masked_fill(response_mask == 0, float("-inf"))
+                        weights = torch.softmax(eca_logits, dim=-1)
+                        advantages = advantages * T * weights
 
                     # for fully_async_policy
                     if hasattr(self.config, "use_rollout_log_probs") and self.config.use_rollout_log_probs:

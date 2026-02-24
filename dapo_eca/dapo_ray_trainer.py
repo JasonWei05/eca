@@ -386,17 +386,10 @@ class RayDAPOTrainer(RayPPOTrainer):
                     if scheduled_eca is not None and "grad_sq" in batch.batch:
                         batch.meta_info["eca_softmax_gamma_schedule"] = list(scheduled_eca)
 
-                    # Softmax advantage reweighting: redistribute per-token via softmax over gradient magnitude
+                    # ECA softmax: defer reweighting to actor training loop (per micro-batch with fresh grad_sq)
                     elif self.config.algorithm.get("eca_softmax", False) and "grad_sq" in batch.batch:
-                        response_mask = batch.batch["response_mask"]
-                        grad_sq = batch.batch["grad_sq"] * response_mask
-                        eca_softmax_gamma = self.config.algorithm.get("eca_softmax_gamma", 1.0)
-                        T = response_mask.sum(dim=-1, keepdim=True)
-                        # Masked softmax: set masked positions to -inf before softmax
-                        logits = eca_softmax_gamma * grad_sq
-                        logits = logits.masked_fill(response_mask == 0, float("-inf"))
-                        weights = torch.softmax(logits, dim=-1)
-                        batch.batch["advantages"] = batch.batch["advantages"] * T * weights
+                        batch.meta_info["eca_softmax_on_policy_grad_sq"] = True
+                        batch.meta_info["eca_softmax_gamma"] = self.config.algorithm.get("eca_softmax_gamma", 1.0)
                         batch.batch.pop("grad_sq")
 
                     # On-policy ECA: w_t = 1/(f_t + c), c = Var(A_seq) / B_prompts

@@ -9,3 +9,6 @@ env_vars:
   NCCL_IB_DISABLE: "1"
   NCCL_SOCKET_IFNAME: "eth0"
   NCCL_DEBUG: "WARN"
+  XDG_CACHE_HOME: "/data01/.cache"
+  HF_HOME: "/data01/.cache/huggingface"
+  VLLM_CACHE_DIR: "/data01/.cache/vllm"
