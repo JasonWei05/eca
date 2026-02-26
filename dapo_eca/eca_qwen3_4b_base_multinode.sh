@@ -7,7 +7,7 @@ export RAY_TMPDIR=/data02/ray_tmp
 # ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-normal-512batchsz-16updates-lora-1e-5lr-20k-limit'
+exp_name='DAPO-Qwen3-4B-Base-softmax1.0-512batchsz-16updates-lora-2.5e-5lr-20k-limit'
 
 adv_estimator=grpo
 
@@ -111,7 +111,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     +actor_rollout_ref.model.override_config.resid_pdrop=0. \
     +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.optim.lr=1e-5 \
+    actor_rollout_ref.actor.optim.lr=2.5e-5 \
     actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
@@ -126,7 +126,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.tensor_model_parallel_size=${gen_tp} \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
-    actor_rollout_ref.rollout.max_num_batched_tokens=2048 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=4096 \
     actor_rollout_ref.rollout.temperature=${temperature} \
     actor_rollout_ref.rollout.top_p=${top_p} \
     actor_rollout_ref.rollout.top_k="${top_k}" \
@@ -170,10 +170,12 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.actor.use_torch_compile=False \
     actor_rollout_ref.ref.use_torch_compile=False \
     algorithm.eca_linear=False \
-    algorithm.eca_softmax=False \
+    algorithm.eca_softmax=True \
     algorithm.eca_softmax_gamma=1.0 \
     algorithm.eca_on_policy=False \
     algorithm.eca_on_policy_c_min=1e-8 \
+    algorithm.entropy_top=False \
+    algorithm.entropy_top_ratio=0.2 \
     actor_rollout_ref.actor.calculate_sum_pi_squared=True \
     actor_rollout_ref.actor.entropy_checkpointing=True \
     actor_rollout_ref.ref.entropy_checkpointing=True \

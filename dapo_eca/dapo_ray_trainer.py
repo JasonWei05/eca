@@ -435,6 +435,11 @@ class RayDAPOTrainer(RayPPOTrainer):
                         batch.batch["advantages"] = advantages * w_t
                         batch.batch.pop("grad_sq")
 
+                    # Entropy-top: pass config to actor via meta_info
+                    if self.config.algorithm.get("entropy_top", False):
+                        batch.meta_info["entropy_top"] = True
+                        batch.meta_info["entropy_top_ratio"] = self.config.algorithm.get("entropy_top_ratio", 0.2)
+
                     # update critic
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, "pink"):

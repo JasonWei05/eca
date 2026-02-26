@@ -696,6 +696,10 @@ class DataParallelPPOActor(BasePPOActor):
         eca_softmax_on_policy_grad_sq = data.meta_info.get("eca_softmax_on_policy_grad_sq", False)
         eca_softmax_gamma = data.meta_info.get("eca_softmax_gamma", 0.0)
 
+        # Extract entropy-top config (train only top X% highest-entropy tokens)
+        entropy_top = data.meta_info.get("entropy_top", False)
+        entropy_top_ratio = data.meta_info.get("entropy_top_ratio", 0.2)
+
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
@@ -743,7 +747,7 @@ class DataParallelPPOActor(BasePPOActor):
                     entropy_coeff = self.config.entropy_coeff
                     loss_agg_mode = self.config.loss_agg_mode
 
-                    calculate_entropy = self.config.calculate_entropy or (entropy_coeff != 0)
+                    calculate_entropy = self.config.calculate_entropy or (entropy_coeff != 0) or entropy_top
 
                     if self.config.use_dynamic_bsz:
                         loss_scale_factor = response_mask.shape[0] / self.config.ppo_mini_batch_size
@@ -775,6 +779,15 @@ class DataParallelPPOActor(BasePPOActor):
                             old_log_prob = log_prob.detach()
                         else:
                             old_log_prob = model_inputs["old_log_probs"]
+
+                    # Entropy-top: mask loss to only top X% highest-entropy tokens
+                    if entropy_top and entropy is not None:
+                        from verl.trainer.ppo.core_algos import get_global_entropy_top_mask
+
+                        entropy_top_mask = get_global_entropy_top_mask(
+                            entropy=entropy, response_mask=response_mask, top_ratio=entropy_top_ratio
+                        )
+                        response_mask = response_mask * entropy_top_mask
 
                     loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
                     # vanilla -> verl.trainer.ppo.core_algos.compute_policy_loss_vanilla

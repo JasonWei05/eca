@@ -609,6 +609,8 @@ class AlgoConfig(BaseConfig):
     eca_on_policy: bool = False
     eca_on_policy_c_min: float = 1e-8
     scheduled_eca: Optional[list[float]] = None
+    entropy_top: bool = False
+    entropy_top_ratio: float = 0.2
     use_kl_in_reward: bool = False
     kl_penalty: str = "kl"
     kl_ctrl: KLControlConfig = field(default_factory=KLControlConfig)
