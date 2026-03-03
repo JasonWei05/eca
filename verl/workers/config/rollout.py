@@ -30,6 +30,7 @@ __all__ = [
     "ServerConfig",
     "PrometheusConfig",
     "RolloutConfig",
+    "CheckpointEngineConfig",
 ]
 
 
@@ -81,6 +82,8 @@ class AgentLoopConfig(BaseConfig):
 
 @dataclass
 class TraceConfig(BaseConfig):
+    project_name: Optional[str] = None
+    experiment_name: Optional[str] = None
     backend: Optional[str] = None
     token2text: bool = False
     max_samples_per_step_per_worker: Optional[int] = None
@@ -120,11 +123,27 @@ class PrometheusConfig(BaseConfig):
 
 
 @dataclass
+class CheckpointEngineConfig(BaseConfig):
+    """
+    Configuration for checkpoint engine to update weights from trainer to rollout
+    """
+
+    # Backend for checkpoint engine: naive, nccl, nixl, hccl
+    backend: Optional[str] = "naive"
+    # Bucket size in MB to transfer multiple weights at one time
+    update_weights_bucket_megabytes: int = 2048
+    # Additional keyword arguments for checkpoint engine
+    engine_kwargs: dict = field(default_factory=dict)
+
+
+@dataclass
 class RolloutConfig(BaseConfig):
     _mutable_fields = {"max_model_len", "load_format"}
 
     name: Optional[str] = MISSING
     mode: str = "async"
+    nnodes: int = 0
+    n_gpus_per_node: int = 8
 
     temperature: float = 1.0
     top_k: int = -1
@@ -190,7 +209,8 @@ class RolloutConfig(BaseConfig):
     # Extension point for custom configurations
     custom: Optional[dict] = None
 
-    update_weights_bucket_megabytes: int = 512
+    # Checkpoint Engine config for update weights from trainer to rollout
+    checkpoint_engine: CheckpointEngineConfig = field(default_factory=CheckpointEngineConfig)
 
     skip_rollout: bool = False
 
@@ -223,6 +243,8 @@ class RolloutConfig(BaseConfig):
     enable_sleep_mode: bool = True
 
     mtp: MtpConfig = field(default_factory=MtpConfig)
+
+    qat: Optional[dict] = None
 
     def __post_init__(self):
         """Validate the rollout config"""
