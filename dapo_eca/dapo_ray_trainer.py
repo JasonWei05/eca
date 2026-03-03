@@ -36,7 +36,7 @@ from verl.trainer.ppo.ray_trainer import (
     compute_advantage,
     compute_response_mask,
 )
-from verl.trainer.ppo.reward import compute_reward
+from verl.trainer.ppo.reward import extract_reward
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
@@ -241,12 +241,11 @@ class RayDAPOTrainer(RayPPOTrainer):
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
                         # the results from reward model and rule-based results.
                         if self.use_rm and "rm_scores" not in new_batch.batch.keys():
-                            # we first compute reward model score
-                            reward_tensor = self.rm_wg.compute_rm_score(new_batch)
-                            new_batch = new_batch.union(reward_tensor)
+                            # Reward model scores are computed by RewardLoopManager in current verl.
+                            batch_reward = self._compute_reward_colocate(new_batch)
+                            new_batch = new_batch.union(batch_reward)
 
-                        # we combine with rule-based rm
-                        reward_tensor, reward_extra_infos_dict = compute_reward(new_batch, self.reward_fn)
+                        reward_tensor, reward_extra_infos_dict = extract_reward(new_batch)
 
                         new_batch.batch["token_level_scores"] = reward_tensor
 
