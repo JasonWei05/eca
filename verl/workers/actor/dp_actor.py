@@ -122,6 +122,7 @@ class DataParallelPPOActor(BasePPOActor):
         temperature: float,
         calculate_entropy: bool = False,
         return_logits: bool = False,
+        disable_inplace_backward: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Returns:
@@ -270,10 +271,8 @@ class DataParallelPPOActor(BasePPOActor):
                     logits_rmpad = output.logits.squeeze(0)  # (total_nnz, vocab_size)
                     logits_rmpad.div_(temperature)
 
-                    # if use_sp: ((total_nnz / sp) + pad) ; if not use_sp: (batch, seqlen)
-                    inplace_backward = True
-                    if calculate_entropy:
-                        inplace_backward = False
+                    # Keep log-prob computation path aligned across call sites when requested.
+                    inplace_backward = not (calculate_entropy or disable_inplace_backward)
                     log_probs = logprobs_from_logits(
                         logits=logits_rmpad,
                         labels=input_ids_rmpad_rolled,
@@ -679,6 +678,9 @@ class DataParallelPPOActor(BasePPOActor):
         # Include grad_sq for scheduled ECA per-step reweighting
         if "grad_sq" in data.batch.keys():
             select_keys.append("grad_sq")
+        # Include rollout Shannon entropy for per-step KL entropy splits
+        if "rollout_entropy" in data.batch.keys():
+            select_keys.append("rollout_entropy")
 
         has_multi_modal_inputs = "multi_modal_inputs" in data.non_tensor_batch.keys()
         non_tensor_select_keys = []
@@ -700,11 +702,161 @@ class DataParallelPPOActor(BasePPOActor):
         entropy_top = data.meta_info.get("entropy_top", False)
         entropy_top_ratio = data.meta_info.get("entropy_top_ratio", 0.2)
 
+        # Shuffle within this GPU's shard before splitting into mini-batches.
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
         mini_batches = data.split(self.config.ppo_mini_batch_size)
 
+        # Shuffle mini-batch order to remove systematic sequence-length ordering
+        # from _balance_batch (which sorts in an inverted-U pattern).
+        # Seed must be identical across FSDP ranks (so they stay in sync) but
+        # vary across RL steps (so each step gets a different permutation).
+        import random
+
+        if not hasattr(self, "_shuffle_step"):
+            self._shuffle_step = 0
+        self._shuffle_step += 1
+        random.Random(42 + self._shuffle_step).shuffle(mini_batches)
+
         on_policy = len(mini_batches) == 1 and self.config.ppo_epochs == 1
+
+        # Save an isolated copy of first mini-batch for corrected KL evaluation (same data at every step)
+        ref_mini_batch = mini_batches[0].select(deepcopy=True)
+        for key in ref_mini_batch.batch.keys():
+            ref_mini_batch.batch[key] = ref_mini_batch.batch[key].clone()
+        ref_entropy_threshold = None
+        if "rollout_entropy" in ref_mini_batch.batch.keys():
+            ref_ent = ref_mini_batch.batch["rollout_entropy"]
+            ref_rmask = ref_mini_batch.batch["response_mask"]
+            valid_ref_ent = ref_ent[ref_rmask.bool()]
+            if valid_ref_ent.numel() > 0:
+                ref_entropy_threshold = torch.quantile(valid_ref_ent.float(), 0.8)
+
+        def _compute_prestep_k3_metrics(target_mini_batch: DataProto, entropy_threshold, mode: str):
+            with torch.no_grad():
+                was_training = self.actor_module.training
+                if mode == "eval":
+                    self.actor_module.eval()
+                elif mode == "train":
+                    self.actor_module.train()
+                else:
+                    raise ValueError(f"Unknown KL eval mode: {mode}")
+
+                kl_sum = 0.0
+                kl_count = 0
+                kl_low_sum = 0.0
+                kl_low_count = 0
+                kl_high_sum = 0.0
+                kl_high_count = 0
+
+                if self.config.use_dynamic_bsz:
+                    metric_micro_batches, _ = prepare_dynamic_batch(
+                        target_mini_batch,
+                        max_token_len=self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size,
+                    )
+                else:
+                    metric_micro_batches = target_mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+
+                for metric_mb in metric_micro_batches:
+                    metric_mb = metric_mb.to(get_device_id())
+                    metric_inputs = {**metric_mb.batch, **metric_mb.non_tensor_batch, "pad_token_id": pad_token_id}
+                    metric_outputs = self._forward_micro_batch(
+                        metric_inputs,
+                        temperature=temperature,
+                        calculate_entropy=False,
+                        disable_inplace_backward=True,
+                    )
+                    metric_log_prob = metric_outputs["log_probs"]
+                    metric_old_lp = metric_inputs["old_log_probs"]
+                    metric_rmask = metric_inputs["response_mask"]
+                    metric_kl = kl_penalty(logprob=metric_old_lp, ref_logprob=metric_log_prob, kl_penalty="k3")
+
+                    kl_sum += (metric_kl * metric_rmask).sum().item()
+                    kl_count += metric_rmask.sum().item()
+
+                    if entropy_threshold is not None and "rollout_entropy" in metric_inputs:
+                        metric_ent = metric_inputs["rollout_entropy"]
+                        low_mask = (metric_ent <= entropy_threshold).float() * metric_rmask
+                        high_mask = (metric_ent > entropy_threshold).float() * metric_rmask
+                        kl_low_sum += (metric_kl * low_mask).sum().item()
+                        kl_low_count += low_mask.sum().item()
+                        kl_high_sum += (metric_kl * high_mask).sum().item()
+                        kl_high_count += high_mask.sum().item()
+
+                if was_training:
+                    self.actor_module.train()
+                else:
+                    self.actor_module.eval()
+
+                return {
+                    "all": (kl_sum / kl_count) if kl_count > 0 else None,
+                    "low": (kl_low_sum / kl_low_count) if kl_low_count > 0 else None,
+                    "high": (kl_high_sum / kl_high_count) if kl_high_count > 0 else None,
+                }
+
+        def _compute_prestep_is_ratio_mse_metrics(target_mini_batch: DataProto, entropy_threshold, mode: str):
+            with torch.no_grad():
+                was_training = self.actor_module.training
+                if mode == "eval":
+                    self.actor_module.eval()
+                elif mode == "train":
+                    self.actor_module.train()
+                else:
+                    raise ValueError(f"Unknown IS eval mode: {mode}")
+
+                mse_sum = 0.0
+                mse_count = 0
+                mse_low_sum = 0.0
+                mse_low_count = 0
+                mse_high_sum = 0.0
+                mse_high_count = 0
+
+                if self.config.use_dynamic_bsz:
+                    metric_micro_batches, _ = prepare_dynamic_batch(
+                        target_mini_batch,
+                        max_token_len=self.config.ppo_max_token_len_per_gpu * self.ulysses_sequence_parallel_size,
+                    )
+                else:
+                    metric_micro_batches = target_mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
+
+                for metric_mb in metric_micro_batches:
+                    metric_mb = metric_mb.to(get_device_id())
+                    metric_inputs = {**metric_mb.batch, **metric_mb.non_tensor_batch, "pad_token_id": pad_token_id}
+                    metric_outputs = self._forward_micro_batch(
+                        metric_inputs,
+                        temperature=temperature,
+                        calculate_entropy=False,
+                        disable_inplace_backward=True,
+                    )
+                    metric_log_prob = metric_outputs["log_probs"]
+                    metric_old_lp = metric_inputs["old_log_probs"]
+                    metric_rmask = metric_inputs["response_mask"]
+
+                    log_ratio = (metric_log_prob - metric_old_lp).clamp(min=-20, max=20)
+                    ratio_mse = torch.square(torch.exp(log_ratio) - 1.0)
+
+                    mse_sum += (ratio_mse * metric_rmask).sum().item()
+                    mse_count += metric_rmask.sum().item()
+
+                    if entropy_threshold is not None and "rollout_entropy" in metric_inputs:
+                        metric_ent = metric_inputs["rollout_entropy"]
+                        low_mask = (metric_ent <= entropy_threshold).float() * metric_rmask
+                        high_mask = (metric_ent > entropy_threshold).float() * metric_rmask
+                        mse_low_sum += (ratio_mse * low_mask).sum().item()
+                        mse_low_count += low_mask.sum().item()
+                        mse_high_sum += (ratio_mse * high_mask).sum().item()
+                        mse_high_count += high_mask.sum().item()
+
+                if was_training:
+                    self.actor_module.train()
+                else:
+                    self.actor_module.eval()
+
+                return {
+                    "all": (mse_sum / mse_count) if mse_count > 0 else None,
+                    "low": (mse_low_sum / mse_low_count) if mse_low_count > 0 else None,
+                    "high": (mse_high_sum / mse_high_count) if mse_high_count > 0 else None,
+                }
 
         metrics = {
             "actor/pg_loss": 0.0,
@@ -735,6 +887,48 @@ class DataParallelPPOActor(BasePPOActor):
                     micro_batches = mini_batch.split(self.config.ppo_micro_batch_size_per_gpu)
 
                 self.actor_optimizer.zero_grad()
+
+                step_idx = global_step_idx - 1  # 0-indexed (incremented above)
+
+                current_entropy_threshold = None
+                if "rollout_entropy" in mini_batch.batch.keys():
+                    mb_entropy = mini_batch.batch["rollout_entropy"]
+                    mb_rmask = mini_batch.batch["response_mask"]
+                    valid_entropy = mb_entropy[mb_rmask.bool()]
+                    if valid_entropy.numel() > 0:
+                        current_entropy_threshold = torch.quantile(valid_entropy.float(), 0.8)
+
+                # Pre-step KL metrics (all computed before gradient update)
+                same_mb_metrics = _compute_prestep_k3_metrics(
+                    target_mini_batch=ref_mini_batch, entropy_threshold=ref_entropy_threshold, mode="eval"
+                )
+                current_mb_train_metrics = _compute_prestep_k3_metrics(
+                    target_mini_batch=mini_batch, entropy_threshold=current_entropy_threshold, mode="train"
+                )
+                current_mb_eval_metrics = _compute_prestep_k3_metrics(
+                    target_mini_batch=mini_batch, entropy_threshold=current_entropy_threshold, mode="eval"
+                )
+                current_mb_train_is_ratio_mse_metrics = _compute_prestep_is_ratio_mse_metrics(
+                    target_mini_batch=mini_batch, entropy_threshold=current_entropy_threshold, mode="train"
+                )
+
+                metric_groups = {
+                    "actor/kl_k3_same_minibatch_estimate": same_mb_metrics,
+                    "actor/kl_k3_current_minibatch_train": current_mb_train_metrics,
+                    "actor/kl_k3_current_minibatch_eval": current_mb_eval_metrics,
+                    # Explicit name for the standard PPO ratio mode:
+                    # ref = old_log_probs (computed in eval mode), theta = current log_prob (train mode).
+                    "actor/kl_k3_current_minibatch_standard_training_ratio": current_mb_train_metrics,
+                    # Standard IS-ratio off-policyness: (exp(log_prob - old_log_prob) - 1)^2
+                    "actor/is_ratio_mse_current_minibatch_standard_training_ratio": current_mb_train_is_ratio_mse_metrics,
+                }
+                for metric_prefix, metric_values in metric_groups.items():
+                    if metric_values["all"] is not None:
+                        metrics[f"{metric_prefix}_step_{step_idx}"] = metric_values["all"]
+                    if metric_values["low"] is not None:
+                        metrics[f"{metric_prefix}_low_entropy_step_{step_idx}"] = metric_values["low"]
+                    if metric_values["high"] is not None:
+                        metrics[f"{metric_prefix}_high_entropy_step_{step_idx}"] = metric_values["high"]
 
                 for micro_batch in micro_batches:
                     micro_batch = micro_batch.to(get_device_id())
@@ -861,5 +1055,6 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
+
         self.actor_optimizer.zero_grad()
         return metrics

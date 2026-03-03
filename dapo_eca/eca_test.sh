@@ -7,23 +7,23 @@ export RAY_TMPDIR=/data02/ray_tmp
 # ray start --head --port=6379 --dashboard-host=0.0.0.0 --dashboard-port=8265 --num-gpus=8
 
 project_name='DAPO'
-exp_name='DAPO-Qwen3-4B-Base-normal-512batchsz-16updates-lora-2.5e-5lr-20k-limit-test'
+exp_name='DAPO-Qwen3-4B-Base-normal-256batchsz-8updates-full-2.5e-5lr-12k-limit-test'
 
 adv_estimator=grpo
 
 use_kl_in_reward=False
 kl_coef=0.0
-use_kl_loss=False
+use_kl_loss=True
 kl_loss_coef=0.0
 
 clip_ratio_low=0.2
 clip_ratio_high=0.28
 
 max_prompt_length=$((1024 * 2))
-train_max_response_length=$((1024 * 20))
-val_max_response_length=$((1024 * 20))
+train_max_response_length=$((1024 * 12))
+val_max_response_length=$((1024 * 12))
 enable_overlong_buffer=True
-overlong_buffer_len=$((1024 * 4))
+overlong_buffer_len=$((1024 * 2))
 overlong_penalty_factor=1.0
 
 loss_agg_mode="token-mean"
@@ -35,18 +35,18 @@ pca_dim=64
 vn_entropy_top_k=32
 vn_entropy_chunk_size=8192
 
-enable_filter_groups=True
+enable_filter_groups=False
 filter_groups_metric=acc
-max_num_gen_batches=10
-train_prompt_bsz=512
-gen_prompt_bsz=$((train_prompt_bsz * 2))
-n_resp_per_prompt=16
+max_num_gen_batches=2
+train_prompt_bsz=256
+gen_prompt_bsz=$((train_prompt_bsz * 1))
+n_resp_per_prompt=8
 train_prompt_mini_bsz=32
 
 RAY_ADDRESS=${RAY_ADDRESS:-"http://localhost:8265"}
 WORKING_DIR=${WORKING_DIR:-"/home/tiger/jason_wei/eca"}
 RUNTIME_ENV=${RUNTIME_ENV:-"${WORKING_DIR}/dapo_eca/runtime_env.yaml"}
-NNODES=${NNODES:-2}
+NNODES=${NNODES:-1}
 RAY_DATA_HOME=${RAY_DATA_HOME:-"${HOME}/verl"}
 MODEL_PATH=${MODEL_PATH:-"/data01/Qwen3-4B-Base"}
 CKPTS_DIR=${CKPTS_DIR:-"/data01/verl/ckpts/${project_name}/${exp_name}"}
@@ -61,7 +61,7 @@ top_p=1.0
 top_k=-1 # 0 for HF rollout, -1 for vLLM rollout
 
 # Performance Related Parameter
-sp_size=4
+sp_size=2
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + train_max_response_length) / sp_size))
 infer_ppo_max_token_len=$(((max_prompt_length + train_max_response_length) / sp_size))
@@ -102,9 +102,6 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
     actor_rollout_ref.model.path="${MODEL_PATH}" \
-    actor_rollout_ref.model.lora_rank=16 \
-    actor_rollout_ref.model.lora_alpha=32 \
-    actor_rollout_ref.model.target_modules=all-linear \
     actor_rollout_ref.rollout.load_format=safetensors \
     +actor_rollout_ref.model.override_config.attention_dropout=0. \
     +actor_rollout_ref.model.override_config.embd_pdrop=0. \
@@ -112,7 +109,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     +actor_rollout_ref.model.override_config.attn_implementation=sdpa \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.optim.lr=2.5e-5 \
-    actor_rollout_ref.actor.optim.lr_warmup_steps=10 \
+    actor_rollout_ref.actor.optim.lr_warmup_steps=0 \
     actor_rollout_ref.actor.optim.weight_decay=0.1 \
     actor_rollout_ref.actor.ppo_mini_batch_size=${train_prompt_mini_bsz} \
     actor_rollout_ref.actor.fsdp_config.param_offload=${offload} \
@@ -126,7 +123,7 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     actor_rollout_ref.rollout.tensor_model_parallel_size=${gen_tp} \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.enable_chunked_prefill=True \
-    actor_rollout_ref.rollout.max_num_batched_tokens=4096 \
+    actor_rollout_ref.rollout.max_num_batched_tokens=2048 \
     actor_rollout_ref.rollout.temperature=${temperature} \
     actor_rollout_ref.rollout.top_p=${top_p} \
     actor_rollout_ref.rollout.top_k="${top_k}" \
@@ -154,8 +151,8 @@ ray job submit --runtime-env="${RUNTIME_ENV}" \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes="${NNODES}" \
     trainer.val_before_train=False \
-    trainer.test_freq=100 \
-    trainer.save_freq=25 \
+    trainer.test_freq=1000 \
+    trainer.save_freq=1000 \
     trainer.total_epochs=40 \
     trainer.total_training_steps=800 \
     trainer.default_local_dir="${CKPTS_DIR}" \

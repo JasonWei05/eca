@@ -1927,10 +1927,10 @@ def kl_penalty_forward(logprob: torch.FloatTensor, ref_logprob: torch.FloatTenso
     if kl_penalty in ("low_var_kl", "k3"):
         kl = ref_logprob - logprob
         # For numerical stability
-        kl = torch.clamp(kl, min=-20, max=20)
+        kl = torch.clamp(kl, min=-7, max=7)
         ratio = torch.exp(kl)
         kld = (ratio - kl - 1).contiguous()
-        return torch.clamp(kld, min=-10, max=10)
+        return torch.clamp(kld, min=-5, max=5)
 
     if kl_penalty == "full":
         # so, here logprob and ref_logprob should contain the logits for every token in vocabulary

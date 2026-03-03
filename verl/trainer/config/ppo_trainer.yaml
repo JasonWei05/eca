@@ -98,6 +98,12 @@ algorithm:
   # Minimum value for on-policy ECA
   eca_on_policy_c_min: 1e-8
 
+  # Whether to enable entropy top-p sampling
+  entropy_top: False
+
+  # Ratio for entropy top-p sampling
+  entropy_top_ratio: 0.2
+
   # Per-step ECA gamma schedule: list of gamma values, one per gradient step
   scheduled_eca: null
 
