@@ -56,6 +56,19 @@ class RayDAPOTrainer(RayPPOTrainer):
         batch.batch["response_mask"] = compute_response_mask(batch)
         log.info("[DAPO] compute_response_mask: DONE")
 
+        # Compute ref_log_prob FIRST: the LoRA disable/re-enable cycle in
+        # compute_ref_log_prob can leave the FSDP2 model in a subtly different
+        # state.  By running it before old_log_probs, old_log_probs will
+        # capture the exact model state that update_policy will see.
+        if self.use_reference_policy:
+            with marked_timer("ref", timing_raw, "olive"):
+                if not self.ref_in_actor:
+                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                else:
+                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                batch = batch.union(ref_log_prob)
+            log.info("[DAPO] compute_ref_log_prob: DONE")
+
         # recompute old_log_probs
         log.info("[DAPO] compute_log_prob: START")
         with marked_timer("old_log_prob", timing_raw, "blue"):
@@ -88,6 +101,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                 if self.config.algorithm.get("eca_linear", False) or self.config.algorithm.get("eca_softmax", False) or self.config.algorithm.get("eca_on_policy", False):
                     batch.batch["grad_sq"] = (1.0 - sum_pi_squared).clamp(min=0.0)
                 old_log_prob.batch.pop("sum_pi_squared")
+            batch.batch["rollout_entropy"] = old_log_prob.batch["entropys"]
             old_log_prob.batch.pop("entropys")
             batch = batch.union(old_log_prob)
         log.info("[DAPO] compute_log_prob: DONE")
@@ -120,15 +134,6 @@ class RayDAPOTrainer(RayPPOTrainer):
                 vn_entropy_agg = agg_loss(loss_mat=vn_entropies, loss_mask=response_masks, loss_agg_mode=loss_agg_mode)
                 metrics["actor/vn_entropy"] = vn_entropy_agg.detach().item()
             log.info(f"[DAPO] compute_vn_entropy: DONE (vn_entropy={metrics['actor/vn_entropy']:.4f})")
-
-        if self.use_reference_policy:
-            # compute reference log_prob
-            with marked_timer("ref", timing_raw, "olive"):
-                if not self.ref_in_actor:
-                    ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
-                else:
-                    ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
-                batch = batch.union(ref_log_prob)
 
         return batch
 

@@ -1358,6 +1358,9 @@ class RayPPOTrainer:
         batch.meta_info["multi_turn"] = rollout_config.multi_turn.enable
         # TODO: Make "temperature" single source of truth from generation.
         batch.meta_info["temperature"] = rollout_config.temperature
+        batch.meta_info["old_log_prob_micro_batch_size_per_gpu"] = rollout_config.log_prob_micro_batch_size_per_gpu
+        batch.meta_info["old_log_prob_max_token_len_per_gpu"] = rollout_config.log_prob_max_token_len_per_gpu
+        batch.meta_info["old_log_prob_use_dynamic_bsz"] = rollout_config.log_prob_use_dynamic_bsz
         # update actor
         if self.use_legacy_worker_impl == "disable":
             batch_td = batch.to_tensordict()

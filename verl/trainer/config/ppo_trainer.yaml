@@ -98,6 +98,12 @@ algorithm:
   # Minimum value for on-policy ECA
   eca_on_policy_c_min: 1e-8
 
+  # Whether to use entropy top-k advantage reweighting
+  entropy_top: False
+
+  # Ratio of top-k advantages to reweight in entropy top-k
+  entropy_top_ratio: 0.2
+
   # Per-step ECA gamma schedule: list of gamma values, one per gradient step
   scheduled_eca: null
 
