@@ -711,6 +711,31 @@ class DataParallelPPOActor(BasePPOActor):
             "old_log_prob_micro_batch_size_per_gpu", self.config.ppo_micro_batch_size_per_gpu
         )
 
+        # Compute train-mode baseline log_probs before any gradient updates.
+        # Same weights as eval-mode old_log_probs, but different SDPA kernel in train mode.
+        # This isolates the eval/train mode discrepancy from actual policy drift.
+        self.actor_module.train()
+        if metric_use_dynamic_bsz:
+            _train_lp_mbs, _train_lp_idx = prepare_dynamic_batch(
+                data, max_token_len=metric_max_token_len_per_gpu * self.ulysses_sequence_parallel_size
+            )
+        else:
+            _train_lp_mbs = data.split(metric_micro_batch_size_per_gpu)
+            _train_lp_idx = None
+        _train_lp_list = []
+        for _mb in _train_lp_mbs:
+            _mb = _mb.to(get_device_id())
+            _inputs = {**_mb.batch, **_mb.non_tensor_batch, "pad_token_id": pad_token_id}
+            with torch.no_grad():
+                _out = self._forward_micro_batch(
+                    _inputs, temperature=temperature, calculate_entropy=False, disable_inplace_backward=True
+                )
+            _train_lp_list.append(_out["log_probs"])
+        _train_old_lp = torch.cat(_train_lp_list, dim=0)
+        if _train_lp_idx is not None:
+            _train_old_lp = restore_dynamic_batch(_train_old_lp, _train_lp_idx)
+        data.batch["old_log_probs_train"] = _train_old_lp
+
         # Shuffle within this GPU's shard before splitting into mini-batches.
         # Split to make minibatch iterator for updating the actor
         # See PPO paper for details. https://arxiv.org/abs/1707.06347
@@ -746,11 +771,21 @@ class DataParallelPPOActor(BasePPOActor):
                 return None
             return torch.quantile(valid_entropy.float(), 0.8)
 
-        # Fixed first/last update mini-batches for measuring policy drift over the PPO pass.
-        first_metric_mini_batch = _clone_metric_mini_batch(mini_batches[0])
-        last_metric_mini_batch = _clone_metric_mini_batch(mini_batches[-1])
-        first_entropy_threshold = _compute_entropy_threshold(first_metric_mini_batch)
-        last_entropy_threshold = _compute_entropy_threshold(last_metric_mini_batch)
+        # Fixed minibatch probes for measuring policy drift over the shuffled PPO pass.
+        fixed_metric_probe_indices = {
+            "first": 0,
+            "quarter": len(mini_batches) // 4,
+            "middle": len(mini_batches) // 2,
+            "three_quarter": (3 * len(mini_batches)) // 4,
+            "last": len(mini_batches) - 1,
+        }
+        fixed_metric_probes: dict[str, tuple[DataProto, torch.Tensor | None]] = {}
+        for probe_name, mini_batch_idx in fixed_metric_probe_indices.items():
+            metric_mini_batch = _clone_metric_mini_batch(mini_batches[mini_batch_idx])
+            fixed_metric_probes[probe_name] = (
+                metric_mini_batch,
+                _compute_entropy_threshold(metric_mini_batch),
+            )
 
         def _split_metric_micro_batches(target_mini_batch: DataProto):
             if metric_use_dynamic_bsz:
@@ -760,9 +795,8 @@ class DataParallelPPOActor(BasePPOActor):
                 )[0]
             return target_mini_batch.split(metric_micro_batch_size_per_gpu)
 
-        def _compute_prestep_k3_metrics(
-            target_mini_batch: DataProto, entropy_threshold, mode: str, use_self_baseline: bool = False
-        ):
+        def _run_metric_forward_pass(target_mini_batch: DataProto, mode: str):
+            """Run a single forward pass for metrics. Returns list of (log_prob, inputs_dict) per micro-batch."""
             with torch.no_grad():
                 was_training = self.actor_module.training
                 if mode == "eval":
@@ -770,18 +804,10 @@ class DataParallelPPOActor(BasePPOActor):
                 elif mode == "train":
                     self.actor_module.train()
                 else:
-                    raise ValueError(f"Unknown KL eval mode: {mode}")
+                    raise ValueError(f"Unknown metric forward mode: {mode}")
 
-                kl_sum = 0.0
-                kl_count = 0
-                kl_low_sum = 0.0
-                kl_low_count = 0
-                kl_high_sum = 0.0
-                kl_high_count = 0
-
-                metric_micro_batches = _split_metric_micro_batches(target_mini_batch)
-
-                for metric_mb in metric_micro_batches:
+                results = []
+                for metric_mb in _split_metric_micro_batches(target_mini_batch):
                     metric_mb = metric_mb.to(get_device_id())
                     metric_inputs = {**metric_mb.batch, **metric_mb.non_tensor_batch, "pad_token_id": pad_token_id}
                     metric_outputs = self._forward_micro_batch(
@@ -790,100 +816,98 @@ class DataParallelPPOActor(BasePPOActor):
                         calculate_entropy=False,
                         disable_inplace_backward=True,
                     )
-                    metric_log_prob = metric_outputs["log_probs"]
-                    metric_old_lp = metric_log_prob.detach() if use_self_baseline else metric_inputs["old_log_probs"]
-                    metric_rmask = metric_inputs["response_mask"]
-                    metric_kl = kl_penalty(logprob=metric_old_lp, ref_logprob=metric_log_prob, kl_penalty="k3")
-
-                    kl_sum += (metric_kl * metric_rmask).sum().item()
-                    kl_count += metric_rmask.sum().item()
-
-                    if entropy_threshold is not None and "rollout_entropy" in metric_inputs:
-                        metric_ent = metric_inputs["rollout_entropy"]
-                        low_mask = (metric_ent <= entropy_threshold).float() * metric_rmask
-                        high_mask = (metric_ent > entropy_threshold).float() * metric_rmask
-                        kl_low_sum += (metric_kl * low_mask).sum().item()
-                        kl_low_count += low_mask.sum().item()
-                        kl_high_sum += (metric_kl * high_mask).sum().item()
-                        kl_high_count += high_mask.sum().item()
+                    results.append((metric_outputs["log_probs"], metric_inputs))
 
                 if was_training:
                     self.actor_module.train()
                 else:
                     self.actor_module.eval()
 
-                return {
-                    "all": (kl_sum / kl_count) if kl_count > 0 else None,
-                    "low": (kl_low_sum / kl_low_count) if kl_low_count > 0 else None,
-                    "high": (kl_high_sum / kl_high_count) if kl_high_count > 0 else None,
-                }
+            return results
 
-        def _compute_prestep_is_ratio_mse_metrics(
-            target_mini_batch: DataProto, entropy_threshold, mode: str, use_self_baseline: bool = False
-        ):
-            with torch.no_grad():
-                was_training = self.actor_module.training
-                if mode == "eval":
-                    self.actor_module.eval()
-                elif mode == "train":
-                    self.actor_module.train()
-                else:
-                    raise ValueError(f"Unknown IS eval mode: {mode}")
+        def _kl_k3_from_forward(forward_results, baseline_key: str, entropy_threshold):
+            """Compute KL k3 from pre-computed forward results against a named baseline."""
+            kl_sum = 0.0
+            kl_count = 0
+            kl_low_sum = 0.0
+            kl_low_count = 0
+            kl_high_sum = 0.0
+            kl_high_count = 0
 
-                mse_sum = 0.0
-                mse_count = 0
-                mse_low_sum = 0.0
-                mse_low_count = 0
-                mse_high_sum = 0.0
-                mse_high_count = 0
+            for metric_log_prob, metric_inputs in forward_results:
+                if baseline_key not in metric_inputs:
+                    return {"all": None, "low": None, "high": None}
+                metric_old_lp = metric_inputs[baseline_key]
+                metric_rmask = metric_inputs["response_mask"]
+                metric_kl = kl_penalty(logprob=metric_old_lp, ref_logprob=metric_log_prob, kl_penalty="k3")
 
-                metric_micro_batches = _split_metric_micro_batches(target_mini_batch)
+                kl_sum += (metric_kl * metric_rmask).sum().item()
+                kl_count += metric_rmask.sum().item()
 
-                for metric_mb in metric_micro_batches:
-                    metric_mb = metric_mb.to(get_device_id())
-                    metric_inputs = {**metric_mb.batch, **metric_mb.non_tensor_batch, "pad_token_id": pad_token_id}
-                    metric_outputs = self._forward_micro_batch(
-                        metric_inputs,
-                        temperature=temperature,
-                        calculate_entropy=False,
-                        disable_inplace_backward=True,
-                    )
-                    metric_log_prob = metric_outputs["log_probs"]
-                    metric_old_lp = metric_log_prob.detach() if use_self_baseline else metric_inputs["old_log_probs"]
-                    metric_rmask = metric_inputs["response_mask"]
+                if entropy_threshold is not None and "rollout_entropy" in metric_inputs:
+                    metric_ent = metric_inputs["rollout_entropy"]
+                    low_mask = (metric_ent <= entropy_threshold).float() * metric_rmask
+                    high_mask = (metric_ent > entropy_threshold).float() * metric_rmask
+                    kl_low_sum += (metric_kl * low_mask).sum().item()
+                    kl_low_count += low_mask.sum().item()
+                    kl_high_sum += (metric_kl * high_mask).sum().item()
+                    kl_high_count += high_mask.sum().item()
 
-                    log_ratio = (metric_log_prob - metric_old_lp).clamp(min=-20, max=20)
-                    ratio_mse = torch.square(torch.exp(log_ratio) - 1.0)
+            return {
+                "all": (kl_sum / kl_count) if kl_count > 0 else None,
+                "low": (kl_low_sum / kl_low_count) if kl_low_count > 0 else None,
+                "high": (kl_high_sum / kl_high_count) if kl_high_count > 0 else None,
+            }
 
-                    mse_sum += (ratio_mse * metric_rmask).sum().item()
-                    mse_count += metric_rmask.sum().item()
+        def _is_ratio_mse_from_forward(forward_results, baseline_key: str, entropy_threshold):
+            """Compute IS-ratio MSE from pre-computed forward results against a named baseline."""
+            is_ratio_top_clip = 0.5
+            mse_sum = 0.0
+            mse_count = 0
+            mse_low_sum = 0.0
+            mse_low_count = 0
+            mse_high_sum = 0.0
+            mse_high_count = 0
 
-                    if entropy_threshold is not None and "rollout_entropy" in metric_inputs:
-                        metric_ent = metric_inputs["rollout_entropy"]
-                        low_mask = (metric_ent <= entropy_threshold).float() * metric_rmask
-                        high_mask = (metric_ent > entropy_threshold).float() * metric_rmask
-                        mse_low_sum += (ratio_mse * low_mask).sum().item()
-                        mse_low_count += low_mask.sum().item()
-                        mse_high_sum += (ratio_mse * high_mask).sum().item()
-                        mse_high_count += high_mask.sum().item()
+            for metric_log_prob, metric_inputs in forward_results:
+                if baseline_key not in metric_inputs:
+                    return {"all": None, "low": None, "high": None}
+                metric_old_lp = metric_inputs[baseline_key]
+                metric_rmask = metric_inputs["response_mask"]
 
-                if was_training:
-                    self.actor_module.train()
-                else:
-                    self.actor_module.eval()
+                log_ratio = (metric_log_prob - metric_old_lp).clamp(min=-20, max=20)
+                clipped_ratio_delta = torch.clamp(torch.exp(log_ratio) - 1.0, max=is_ratio_top_clip)
+                ratio_mse = torch.square(clipped_ratio_delta)
 
-                return {
-                    "all": (mse_sum / mse_count) if mse_count > 0 else None,
-                    "low": (mse_low_sum / mse_low_count) if mse_low_count > 0 else None,
-                    "high": (mse_high_sum / mse_high_count) if mse_high_count > 0 else None,
-                }
+                mse_sum += (ratio_mse * metric_rmask).sum().item()
+                mse_count += metric_rmask.sum().item()
+
+                if entropy_threshold is not None and "rollout_entropy" in metric_inputs:
+                    metric_ent = metric_inputs["rollout_entropy"]
+                    low_mask = (metric_ent <= entropy_threshold).float() * metric_rmask
+                    high_mask = (metric_ent > entropy_threshold).float() * metric_rmask
+                    mse_low_sum += (ratio_mse * low_mask).sum().item()
+                    mse_low_count += low_mask.sum().item()
+                    mse_high_sum += (ratio_mse * high_mask).sum().item()
+                    mse_high_count += high_mask.sum().item()
+
+            return {
+                "all": (mse_sum / mse_count) if mse_count > 0 else None,
+                "low": (mse_low_sum / mse_low_count) if mse_low_count > 0 else None,
+                "high": (mse_high_sum / mse_high_count) if mse_high_count > 0 else None,
+            }
+
+        def _sqrt_metric_values(metric_values: dict[str, float | None]) -> dict[str, float | None]:
+            return {
+                metric_name: (metric_value**0.5 if metric_value is not None else None)
+                for metric_name, metric_value in metric_values.items()
+            }
 
         metrics = {
             "actor/pg_loss": 0.0,
             "actor/kl_loss": 0.0,
         }
         debug_step0_kl = os.getenv("VERL_DEBUG_KL_STEP0", "0") == "1"
-        step0_self_baseline = os.getenv("VERL_STEP0_SELF_BASELINE", "1") == "1"
         global_step_idx = 0
         for _ in range(self.config.ppo_epochs):
             for batch_idx, mini_batch in enumerate(mini_batches):
@@ -914,50 +938,34 @@ class DataParallelPPOActor(BasePPOActor):
 
                 current_entropy_threshold = _compute_entropy_threshold(mini_batch)
 
-                # Pre-step KL metrics (all computed before gradient update)
-                use_step0_self_baseline = step0_self_baseline and step_idx == 0
-                first_mb_metrics = _compute_prestep_k3_metrics(
-                    target_mini_batch=first_metric_mini_batch,
-                    entropy_threshold=first_entropy_threshold,
-                    mode="eval",
-                    use_self_baseline=use_step0_self_baseline,
-                )
-                last_mb_metrics = _compute_prestep_k3_metrics(
-                    target_mini_batch=last_metric_mini_batch,
-                    entropy_threshold=last_entropy_threshold,
-                    mode="eval",
-                    use_self_baseline=use_step0_self_baseline,
-                )
-                current_mb_train_metrics = _compute_prestep_k3_metrics(
-                    target_mini_batch=mini_batch,
-                    entropy_threshold=current_entropy_threshold,
-                    mode="train",
-                    use_self_baseline=use_step0_self_baseline,
-                )
-                current_mb_eval_metrics = _compute_prestep_k3_metrics(
-                    target_mini_batch=mini_batch,
-                    entropy_threshold=current_entropy_threshold,
-                    mode="eval",
-                    use_self_baseline=use_step0_self_baseline,
-                )
-                current_mb_train_is_ratio_mse_metrics = _compute_prestep_is_ratio_mse_metrics(
-                    target_mini_batch=mini_batch,
-                    entropy_threshold=current_entropy_threshold,
-                    mode="train",
-                    use_self_baseline=use_step0_self_baseline,
-                )
+                # Pre-step KL/IS-ratio metrics against 3 baselines (all computed before gradient update).
+                # Current policy is always in train mode (matching the actual gradient update).
+                # Three baselines for the reference policy (computed once before training):
+                #   eval_old_lp  = FSDP eval-mode forward pass (standard compute_log_prob)
+                #   train_old_lp = FSDP train-mode forward pass (isolates SDPA kernel effect)
+                #   vllm_rollout = vLLM inference engine log probs (isolates train/inference gap)
+                baselines = {"eval_old_lp": "old_log_probs", "train_old_lp": "old_log_probs_train"}
+                if "rollout_log_probs" in mini_batch.batch.keys():
+                    baselines["vllm_rollout"] = "rollout_log_probs"
 
-                metric_groups = {
-                    "actor/kl_k3_first_minibatch_estimate": first_mb_metrics,
-                    "actor/kl_k3_last_minibatch_estimate": last_mb_metrics,
-                    "actor/kl_k3_current_minibatch_train": current_mb_train_metrics,
-                    "actor/kl_k3_current_minibatch_eval": current_mb_eval_metrics,
-                    # Explicit name for the standard PPO ratio mode:
-                    # ref = old_log_probs (computed in eval mode), theta = current log_prob (train mode).
-                    "actor/kl_k3_current_minibatch_standard_training_ratio": current_mb_train_metrics,
-                    # Standard IS-ratio off-policyness: (exp(log_prob - old_log_prob) - 1)^2
-                    "actor/is_ratio_mse_current_minibatch_standard_training_ratio": current_mb_train_is_ratio_mse_metrics,
-                }
+                metric_groups = {}
+
+                # Fixed probes: train-mode forward of current policy, KL against all baselines
+                for probe_name, (target_mini_batch, entropy_threshold) in fixed_metric_probes.items():
+                    fwd = _run_metric_forward_pass(target_mini_batch, mode="train")
+                    for bl_name, bl_key in baselines.items():
+                        kl = _kl_k3_from_forward(fwd, bl_key, entropy_threshold)
+                        metric_groups[f"actor/kl_k3_{probe_name}_mb_vs_{bl_name}"] = kl
+
+                # Current minibatch: train-mode forward of current policy, KL + IS-ratio against all baselines
+                fwd = _run_metric_forward_pass(mini_batch, mode="train")
+                for bl_name, bl_key in baselines.items():
+                    kl = _kl_k3_from_forward(fwd, bl_key, current_entropy_threshold)
+                    metric_groups[f"actor/kl_k3_current_mb_vs_{bl_name}"] = kl
+                    is_mse = _is_ratio_mse_from_forward(fwd, bl_key, current_entropy_threshold)
+                    metric_groups[f"actor/is_ratio_mse_current_mb_vs_{bl_name}"] = is_mse
+                    metric_groups[f"actor/is_ratio_rmse_current_mb_vs_{bl_name}"] = _sqrt_metric_values(is_mse)
+
                 for metric_prefix, metric_values in metric_groups.items():
                     if metric_values["all"] is not None:
                         metrics[f"{metric_prefix}_step_{step_idx}"] = metric_values["all"]
@@ -1032,8 +1040,8 @@ class DataParallelPPOActor(BasePPOActor):
 
                             log_ratio_old_new = (lp1 - old_lp).clamp(min=-20, max=20)
                             log_ratio_new_new = (lp2 - lp1).clamp(min=-20, max=20)
-                            mse_old_new = torch.square(torch.exp(log_ratio_old_new) - 1.0)
-                            mse_new_new = torch.square(torch.exp(log_ratio_new_new) - 1.0)
+                            mse_old_new = torch.square(torch.clamp(torch.exp(log_ratio_old_new) - 1.0, max=0.5))
+                            mse_new_new = torch.square(torch.clamp(torch.exp(log_ratio_new_new) - 1.0, max=0.5))
                             mse_old_new_weighted += (mse_old_new * rmask).sum().item()
                             mse_new_new_weighted += (mse_new_new * rmask).sum().item()
 
@@ -1054,6 +1062,12 @@ class DataParallelPPOActor(BasePPOActor):
                             self.actor_module.train()
                         else:
                             self.actor_module.eval()
+
+                step_clipfrac_high_sum = 0.0
+                step_clipfrac_low_sum = 0.0
+                step_dualclipfrac_sum = 0.0
+                step_tvd_sum = 0.0
+                step_response_tokens = 0.0
 
                 for micro_batch in micro_batches:
                     micro_batch = micro_batch.to(get_device_id())
@@ -1131,6 +1145,22 @@ class DataParallelPPOActor(BasePPOActor):
                     )
                     micro_batch_metrics.update(pg_metrics)
 
+                    # Accumulate per-step clip fractions and TVD
+                    with torch.no_grad():
+                        n_resp_tokens = response_mask.sum().item()
+                        step_response_tokens += n_resp_tokens
+                        step_dualclipfrac_sum += pg_metrics["actor/pg_clipfrac_lower"] * n_resp_tokens
+                        # Split clip fraction into high (ratio > 1+ε) and low (ratio < 1-ε)
+                        rollout_old_log_prob = model_inputs["old_log_probs"]
+                        log_ratio = (log_prob - rollout_old_log_prob).clamp(min=-20.0, max=20.0)
+                        ratio = torch.exp(log_ratio)
+                        clip_ratio_high = self.config.clip_ratio_high if self.config.clip_ratio_high is not None else self.config.clip_ratio
+                        clip_ratio_low = self.config.clip_ratio_low if self.config.clip_ratio_low is not None else self.config.clip_ratio
+                        step_clipfrac_high_sum += ((ratio > 1 + clip_ratio_high).float() * response_mask).sum().item()
+                        step_clipfrac_low_sum += ((ratio < 1 - clip_ratio_low).float() * response_mask).sum().item()
+                        tvd = (torch.exp(log_prob) - torch.exp(rollout_old_log_prob)).abs()
+                        step_tvd_sum += (tvd * response_mask).sum().item()
+
                     # Skip if using bypass_mode loss (metrics already computed in pg_metrics)
                     rollout_log_prob = model_inputs.get("rollout_log_probs", None)
                     if loss_mode != "bypass_mode" and rollout_log_prob is not None:
@@ -1180,6 +1210,12 @@ class DataParallelPPOActor(BasePPOActor):
                 grad_norm = self._optimizer_step()
                 mini_batch_metrics = {"actor/grad_norm": grad_norm.detach().item()}
                 append_to_dict(metrics, mini_batch_metrics)
+                metrics[f"actor/grad_norm_step_{step_idx}"] = grad_norm.detach().item()
+                if step_response_tokens > 0:
+                    metrics[f"actor/pg_clipfrac_high_step_{step_idx}"] = step_clipfrac_high_sum / step_response_tokens
+                    metrics[f"actor/pg_clipfrac_low_step_{step_idx}"] = step_clipfrac_low_sum / step_response_tokens
+                    metrics[f"actor/pg_dualclipfrac_step_{step_idx}"] = step_dualclipfrac_sum / step_response_tokens
+                    metrics[f"actor/tvd_sampled_token_step_{step_idx}"] = step_tvd_sum / step_response_tokens
 
         self.actor_optimizer.zero_grad()
         return metrics

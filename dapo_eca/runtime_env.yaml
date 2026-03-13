@@ -1,5 +1,5 @@
 working_dir: ./
-excludes: ["/.git/", "Qwen3-*/**", "Qwen2.5-*/**", "flash_attn-*.whl*", "dapo_eca/entropy_results_smoke/**"]
+excludes: ["/.git/", "Qwen3-*/**", "Qwen2.5-*/**", "flash_attn-*.whl*", "dapo_eca/entropy_results_smoke/**", "autoresearch/", "plots/", "plots2/", "wandb_metric_plots_all_steps/", "wandb_metric_plots_all_steps-3-10/", "wandb_metric_plots_all_steps-new-new/", "dapo_eca/wandb_metric_plots/", "dapo_eca/wandb_metric_plots_all_steps-new/", "dapo_eca/wandb_metric_plots_all_steps-new-new/", "dapo_eca/wandb_metric_plots_all_steps-3-10/", "dapo_eca/wandb_metric_plots_all_steps-3-12/"]
 env_vars:
   TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
   VLLM_USE_V1: "1"
